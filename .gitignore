@@ -1,0 +1,36 @@
+# ========== 敏感信息 ==========
+# 环境变量 (API Key 等)
+.env
+.env.local
+*.env
+
+# ========== Python ==========
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ========== 临时文件 ==========
+temp/
+tmp/
+*.tmp
+*.temp
+*.log
+
+# ========== 输入/输出 (PDF 不入库) ==========
+input/*.pdf
+output/*.pdf
+output/*.png
+output/*.jpg
+
+# ========== IDE ==========
+.vscode/
+.idea/
+*.swp
+*~
+
+# ========== OS ==========
+.DS_Store
+Thumbs.db

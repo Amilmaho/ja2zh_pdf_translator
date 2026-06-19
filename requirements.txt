@@ -1,0 +1,24 @@
+# PDF Processing
+PyMuPDF==1.24.14
+pymupdf4llm>=0.0.17
+
+# OCR (Optical Character Recognition)
+pytesseract>=0.3.10
+easyocr>=1.7.0
+Pillow>=10.0.0
+
+# Translation
+deep-translator>=1.11.4
+openai>=1.0.0
+
+# PDF Generation
+reportlab>=4.0.0
+fpdf2>=2.7.0
+
+# Image Processing
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# Utilities
+tqdm>=4.65.0
+python-dotenv>=1.0.0
