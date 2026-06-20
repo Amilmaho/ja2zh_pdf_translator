@@ -1,118 +1,184 @@
 # 日文 PDF 翻译工具 🇯🇵 → 🇨🇳
+（测试中）
+将**多页日文 PDF** 自动翻译为简体中文，支持**文字型**和**图片型（扫描件）**PDF。
 
-将**多页日文 PDF** 翻译为中文，支持**文字型 PDF**和**图片型（扫描件）PDF**。
+🖥️ **macOS** · **Windows** · **Linux** 全平台可用
+
+---
 
 ## ✨ 核心功能
 
 | 特性 | 说明 |
 |---|---|
-| 🔤 **文字型 PDF** | PyMuPDF 提取文字 → 翻译 → 原位替换写入 |
-| 🖼️ **图片型 PDF** | 提取图片 → OCR 识别日文 → 翻译 → 白底中文**叠加覆盖**原图 |
-| 🌐 **四种翻译引擎** | Google(免费) / DeepSeek / OpenAI / DeepL |
-| 🔍 **双 OCR 引擎** | EasyOCR(GPU加速) / Tesseract(CPU快速) |
-| 🔄 **自动降级** | 下载失败自动重试5次、语言包缺失给出下载指引 |
-| 📊 **进度可视化** | tqdm 进度条，错误不被遮盖 |
+| 🔤 **文字型 PDF** | PyMuPDF 提取文字 → AI 翻译 → 原位替换写入 |
+| 🖼️ **图片型 PDF** | 提取图片 → OCR 识别日文 → 翻译 → 白底中文叠加覆盖原图 |
+| 🌐 **四种翻译引擎** | Google（免费）/ DeepSeek / OpenAI / DeepL |
+| 🔍 **双 OCR 引擎** | EasyOCR（句级识别，GPU 加速）/ Tesseract（字级识别，CPU 快速） |
+| 🛡️ **智能容错** | 置信度过滤 · 翻译拒绝检测 · 渲染重试 · 原文回退 |
+| 🔄 **自动重试** | 模型下载失败自动重试 5 次（指数退避） |
+| 📊 **进度可视化** | tqdm 进度条，警告不遮盖进度 |
+
+---
 
 ## 📁 项目结构
 
-```text
-japanese_pdf_translator/
-├── main.py                 # 主程序入口
-├── config.py               # 全局配置
-├── requirements.txt        # Python 依赖
-├── .env.example            # API Key 模板
-├── modules/
-│   ├── pdf_extractor.py    # PDF 文字/图片提取
-│   ├── ocr_engine.py       # OCR 引擎 (自动重试+语言包检测)
-│   ├── translator.py       # 翻译引擎 (Google/DeepSeek/OpenAI/DeepL)
-│   └── pdf_generator.py    # PDF 生成 (文字替换 + 图片叠加两种模式)
-├── input/                  # 放入待翻译的 PDF
-├── output/                 # 翻译后的 PDF 输出
-└── temp/                   # 临时文件 (自动清理)
 ```
+ja2zh_pdf_translator/
+├── main.py                 # 主程序入口
+├── config.py               # 全局配置（跨平台自适应）
+├── requirements.txt        # Python 依赖
+├── .env                    # API Key 配置（需自行创建）
+├── modules/
+│   ├── pdf_extractor.py    # PDF 文字/图片提取（保留位置信息）
+│   ├── ocr_engine.py       # OCR 引擎（EasyOCR + Tesseract，自动检测语言包）
+│   ├── translator.py       # 翻译引擎（Google / DeepSeek / OpenAI / DeepL）
+│   └── pdf_generator.py    # PDF 生成（文字替换 + 图片叠加，三级回退渲染）
+├── input/                  # ← 把待翻译的 PDF 放这里
+├── output/                 # ← 翻译后的 PDF 输出在这里
+└── temp/                   # 临时文件（可手动清理）
+```
+
+---
 
 ## 🚀 快速开始
 
-### 1. 安装依赖
+### 1. 安装 Python 依赖
 
-```powershell
+```bash
 pip install -r requirements.txt
 ```
 
-### 2. 基础使用
+### 2. 配置 API Key
 
-```powershell
-# 最简单 — Google 翻译 + EasyOCR (首次需下载模型)
-python main.py input/your_file.pdf
-
-# 图片型 PDF 推荐 —  Tesseract
-python main.py input/scanned.pdf --ocr tesseract
-
-# 指定输出路径
-python main.py input.pdf -o output/translated.pdf
-```
-
-### 3. 配置 API Key（推荐 DeepSeek）
-
-复制 `.env.example` → `.env`，填入 Key：
+在项目根目录创建 `.env` 文件：
 
 ```env
-# DeepSeek 
-DEEPSEEK_API_KEY=sk-your-key-here
-W
-# OpenAI (可选)
-OPENAI_API_KEY=sk-your-key-here
+# DeepSeek（推荐，约 ¥0.5~1 翻译一本 300 页轻小说）
+DEEPSEEK_API_KEY=sk-your-deepseek-key
+
+# OpenAI（可选）
+OPENAI_API_KEY=sk-your-openai-key
 ```
 
-> DeepSeek Key 获取: https://platform.deepseek.com/api_keys
+> 🔑 [免费注册 DeepSeek 获取 Key](https://platform.deepseek.com/api_keys)
 
-### 4. 安装 Tesseract (Windows，处理图片型 PDF 推荐)
+### 3. 运行
+
+```bash
+# 默认配置：DeepSeek 翻译 + EasyOCR（首次自动下载约 100MB 模型）
+python main.py input/your_file.pdf
+
+# 指定输出路径
+python main.py input/your_file.pdf -o output/result.pdf
+
+# 免费方案：Google 翻译 + EasyOCR
+python main.py input/your_file.pdf --translator google
+
+# 极速方案：DeepSeek + Tesseract（需先安装 Tesseract）
+python main.py input/your_file.pdf --translator deepseek --ocr tesseract
+```
+
+---
+
+## 🖥️ 各平台安装指南
+
+### 🍎 macOS
+
+```bash
+# EasyOCR —— 无需额外安装（首次运行自动下载模型）
+
+# Tesseract（可选）
+brew install tesseract tesseract-lang
+
+# 修复 Python 3.12 SSL 证书（如遇下载报错）
+/Applications/Python\ 3.12/Install\ Certificates.command
+
+# 中文字体：自动检测 STHeiti → Songti（系统自带）
+```
+
+### 🪟 Windows
 
 ```powershell
-# 1. 下载安装 Tesseract
-#    https://github.com/UB-Mannheim/tesseract/wiki
+# Tesseract（可选）
+# 1. 下载安装：https://github.com/UB-Mannheim/tesseract/wiki
+# 2. 安装时勾选 Japanese 语言包
+# 3. 验证：tesseract --list-langs
 
-# 2. 安装日语语言包（二选一）
-#    方式A: 安装时勾选 Japanese
-#    方式B: 手动下载 jpn.traineddata 放到 tessdata 目录
-#           https://github.com/tesseract-ocr/tessdata/raw/main/jpn.traineddata
-
-# 3. 验证安装
-tesseract --list-langs
+# 中文字体：自动检测 SimSun → Microsoft YaHei
 ```
 
-## 🔧 翻译引擎对比
+### 🐧 Linux
 
-| 引擎 | 免费 | 质量 | 速度 | 需要 |
-| --- | --- | --- | --- | --- |
-| **Google** | ✅ | ⭐⭐⭐ | 快 | 无（可能需代理） |
-| **DeepSeek** | ❌(极便宜) | ⭐⭐⭐⭐ | 快 | API Key |
-| **OpenAI** | ❌ | ⭐⭐⭐⭐⭐ | 中等 | API Key |
-| **DeepL** | ❌ | ⭐⭐⭐⭐ | 快 | API Key |
+```bash
+# Tesseract（可选）
+sudo apt install tesseract-ocr tesseract-ocr-jpn
 
-## 🖼️ OCR 引擎对比
+# 中文字体
+sudo apt install fonts-noto-cjk
+```
 
-| 引擎 | 准确度 | 速度 | 安装 |
-| --- | --- | --- | --- |
-| **EasyOCR** | ⭐⭐⭐⭐ | 中等(GPU快) | pip install easyocr（首次需下载模型） |
-| **Tesseract** | ⭐⭐⭐ | 快 | 需单独安装 + 语言包 |
+---
 
-> **图片型 PDF 推荐**: `--ocr tesseract`（无需下载模型，速度快）
-
-## 📋 命令行参数
+## 📋 完整命令参考
 
 ```text
 python main.py <PDF文件> [选项]
 
 选项:
   -o, --output PATH      输出 PDF 路径
-  --translator ENGINE    翻译引擎: google | deepseek | openai | deepl
-                         默认: google
-  --ocr ENGINE           OCR 引擎: easyocr | tesseract
-                         默认: easyocr
+  --translator ENGINE    翻译引擎: deepseek(默认) | google | openai | deepl
+  --ocr ENGINE           OCR 引擎: easyocr(默认) | tesseract
   --source-lang CODE     源语言 (默认: ja)
   --target-lang CODE     目标语言 (默认: zh-CN)
 ```
+
+**实测可用命令（macOS）：**
+
+```bash
+# ① 默认 —— DeepSeek + EasyOCR（推荐，翻译质量最好）
+python main.py input/your_file.pdf
+
+# ② 免费 —— Google + EasyOCR
+python main.py input/your_file.pdf --translator google
+
+# ③ 极速 —— DeepSeek + Tesseract（需 brew install tesseract tesseract-lang）
+python main.py input/your_file.pdf --ocr tesseract
+
+# ④ 指定输出
+python main.py input/your_file.pdf -o output/my_translated.pdf
+
+# ⑤ OpenAI 最高质量
+python main.py input/your_file.pdf --translator openai
+```
+
+---
+
+## 🔧 翻译引擎对比
+
+| 引擎 | 费用 | 日→中质量 | 速度 | 需要 |
+|------|------|-----------|------|------|
+| **DeepSeek** | ≈ ¥0.5~1/300页 | ⭐⭐⭐⭐ | 快 | [API Key](https://platform.deepseek.com/api_keys) |
+| **Google** | 免费 | ⭐⭐⭐ | 快 | 无需配置 |
+| **OpenAI** | ≈ ¥3~5/300页 | ⭐⭐⭐⭐⭐ | 中等 | API Key |
+| **DeepL** | 按量付费 | ⭐⭐⭐⭐ | 快 | API Key |
+
+---
+
+## 🔍 OCR 引擎对比（实测 391 页轻小说）
+
+| | EasyOCR | Tesseract |
+|------|---------|------------|
+| **识别粒度** | 🟢 句子级（保持上下文） | 🔴 单字级（拆散语义） |
+| **第 5 页实测** | 17 区 → 10 条有效翻译 | 57 区 → 7 条有效翻译 |
+| **翻译可用率** | ≈ 59% | ≈ 12% |
+| **速度（单页）** | ≈ 12s（GPU） / ≈ 25s（CPU） | ≈ 3s |
+| **GPU 加速** | ✅ macOS MPS / CUDA | ❌ 纯 CPU |
+| **安装** | pip 安装，自动下载模型 | 需系统安装 + 语言包 |
+
+> 💡 **结论：轻小说/漫画类 PDF 推荐 EasyOCR**，因为它能保持句子结构，翻译质量显著优于 Tesseract。
+> Tesseract 适合纯文字文档扫描件（速度快，但对日文上下文识别较弱）。
+
+---
 
 ## 🔄 工作流程
 
@@ -123,42 +189,90 @@ flowchart TD
     B -->|图片型| D[PyMuPDF 提取图片]
     C --> E[翻译引擎翻译]
     D --> F[OCR 识别日文]
-    F --> E
-    E --> G{PDF 生成}
-    G -->|文字型| H[原位替换中文写入]
-    G -->|图片型| I[白底中文叠加覆盖原图]
-    H --> J[✅ 中文 PDF]
-    I --> J
+    F --> G{置信度过滤 ≥ 0.15}
+    G -->|通过| E
+    G -->|丢弃| H[跳过低质量/装饰性文字]
+    E --> I{检测 API 拒绝翻译}
+    I -->|正常| J[PDF 生成]
+    I -->|拒绝| K[回退显示原文]
+    K --> J
+    J --> L{文字渲染}
+    L -->|溢出| M[缩小字号重试]
+    M -->|成功| N[✅ 白底中文叠加]
+    M -->|仍失败| O[截断 + 省略号]
+    O --> N
+    L -->|成功| N
+    H --> P[跳过该区域]
 ```
+
+---
+
+## ⚙️ .env 配置参考
+
+```env
+# === 翻译引擎 ===
+DEEPSEEK_API_KEY=sk-your-key    # DeepSeek（默认引擎）
+OPENAI_API_KEY=sk-your-key      # OpenAI
+DEEPL_API_KEY=your-key          # DeepL
+
+# === OCR 引擎 ===
+# Tesseract 路径（通常自动检测，无需设置）
+# TESSERACT_CMD=/opt/homebrew/bin/tesseract
+
+# === PDF 输出 ===
+# 中文字体路径（自动检测，也可手动指定）
+# FONT_PATH=/System/Library/Fonts/STHeiti Light.ttc
+```
+
+---
 
 ## 🐛 常见问题
 
-**Q: 输出 PDF 依旧是日语？**
+### Q: 翻译后只有白色方块，没有中文？
 
-你的 PDF 是图片型（扫描件）。程序会自动检测并切换到「图片叠加模式」。
-确认 OCR 引擎工作正常（Tesseract 需日语语言包，EasyOCR 需下载模型）。
+✅ 已修复（v2.0）。现在渲染失败会**自动缩字号重试**，仍失败则**灰度显示原文**，杜绝空白白条。
 
-**Q: EasyOCR 下载模型失败？**
+### Q: EasyOCR vs Tesseract 怎么选？
 
-已内置自动重试（最多5次，指数退避）。全部失败后会给出手动下载指引。
-国内用户可切换到 Tesseract: `--ocr tesseract`。
+- 📖 **轻小说 / 漫画 / 图文混排**：用 EasyOCR（句子级识别 + GPU 加速）
+- 📄 **纯文字扫描件**：用 Tesseract（速度快）
 
-**Q: Tesseract 报 `jpn.traineddata` 找不到？**
+### Q: 前几页翻译效果很差？
 
-需要安装日语语言包，程序会检测并给出下载地址。
+正常现象。封面/插图使用装饰性字体，OCR 识别率本身很低。内容页（第 5 页起）翻译效果正常。
 
-**Q: DeepSeek API 调用失败？**
+### Q: 翻译返回"请提供需要翻译的日语文本"？
 
-检查 `.env` 中 `DEEPSEEK_API_KEY` 是否正确，账户是否有余额。
+DeepSeek 对 OCR 乱码会拒绝翻译。新版本自动检测并**回退显示原文**，不会留空白。
 
-**Q: 生成 PDF 卡住？**
+### Q: EasyOCR 下载模型失败？
 
-图片型 PDF 图片多时（如391页），OCR+翻译+生成可能需要 5-15 分钟，
-进度条会显示实时状态，请耐心等待。
+- **macOS**：运行 `Install Certificates.command` 修复 SSL 证书
+- **备选**：切换到 Tesseract `--ocr tesseract`
+- **手动**：下载模型到 `~/.EasyOCR/model/`
 
-**Q: 中文显示为方块？**
+### Q: Tesseract 缺少日语语言包？
 
-确保系统安装了中文字体（宋体/微软雅黑），或在 `.env` 中指定 `FONT_PATH`。
+- **macOS**：`brew install tesseract-lang`
+- **Windows**：安装时勾选 Japanese，或下载 [jpn.traineddata](https://github.com/tesseract-ocr/tessdata/raw/main/jpn.traineddata)
+- **Linux**：`sudo apt install tesseract-ocr-jpn`
+
+### Q: 中文显示为方块/乱码？
+
+程序会自动检测系统中文字体：
+- **macOS** → STHeiti / Songti（系统自带）
+- **Windows** → SimSun / Microsoft YaHei
+- 手动指定：在 `.env` 中设置 `FONT_PATH`
+
+### Q: 300 多页 PDF 要跑多久？
+
+| 配置 | 预估时间 |
+|------|----------|
+| EasyOCR + DeepSeek | 1 ~ 3 小时 |
+| Tesseract + DeepSeek | 30 ~ 60 分钟 |
+| EasyOCR + Google | 1 ~ 2 小时 |
+
+---
 
 ## 📄 License
 

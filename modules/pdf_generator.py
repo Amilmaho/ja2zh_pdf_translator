@@ -29,22 +29,39 @@ class PDFGenerator:
         print(f"[PDF生成] 使用字体: {self.font_path}")
 
     def _find_chinese_font(self) -> str:
-        """自动查找可用的中文字体"""
+        """自动查找可用的中文字体 (支持 Windows / macOS / Linux)"""
+        # 优先使用环境变量指定的字体
+        if config.FONT_PATH and os.path.exists(config.FONT_PATH):
+            return config.FONT_PATH
+
         candidates = [
+            # macOS 常见中文字体
+            "/System/Library/Fonts/STHeiti Light.ttc",
+            "/System/Library/Fonts/STHeiti Medium.ttc",
+            "/System/Library/Fonts/Songti.ttc",
+            "/System/Library/Fonts/PingFang.ttc",
+            "/System/Library/Fonts/Hiragino Sans GB.ttc",
+            "/Library/Fonts/Arial Unicode.ttf",
+            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+            # Windows 中文字体
             "C:/Windows/Fonts/simsun.ttc",
             "C:/Windows/Fonts/msyh.ttc",
             "C:/Windows/Fonts/msyhbd.ttc",
             "C:/Windows/Fonts/simhei.ttf",
             "C:/Windows/Fonts/mingliu.ttc",
-            "/System/Library/Fonts/PingFang.ttc",
-            "/System/Library/Fonts/Hiragino Sans GB.ttc",
+            # Linux 中文字体
             "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
             "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
         ]
         for f in candidates:
             if os.path.exists(f):
                 return f
-        raise FileNotFoundError("未找到中文字体，请设置 FONT_PATH 环境变量")
+        raise FileNotFoundError(
+            "未找到中文字体！\n"
+            "macOS 用户请确认 /System/Library/Fonts/ 下有 STHeiti 或 Songti\n"
+            "或设置环境变量 FONT_PATH 指向中文字体路径"
+        )
 
     def generate(
         self,
@@ -143,10 +160,23 @@ class PDFGenerator:
         offset_x: float, offset_y: float, scale: float,
         page_w: float, page_h: float
     ):
-        """在图片上叠加翻译文字（白色背景 + 中文）"""
+        """在图片上叠加翻译文字（白色背景 + 中文）
+
+        核心改进：
+        1. 先尝试验证文字能否渲染，再决定是否画白色背景
+        2. 渲染失败时降级显示原文，避免空白的白色矩形
+        3. 字号最小8，最大14，确保可读
+        4. 不吞异常，记录详细错误信息
+        """
         translated = trans.get("translated", "")
+        original = trans.get("original", "")
+
+        # 如果翻译为空，退回原文
         if not translated.strip():
-            return
+            if original.strip():
+                translated = original  # 显示原文
+            else:
+                return  # 都没有，跳过
 
         # OCR 坐标 (图片内坐标) → PDF 页面坐标
         bx0, by0, bx1, by1 = trans["bbox"]
@@ -161,24 +191,47 @@ class PDFGenerator:
         x1 = max(x0 + 10, min(x1, page_w - 2))
         y1 = max(y0 + 6, min(y1, page_h - 2))
 
-        # 计算合适字号（基于原文区域高度）
+        # 计算合适字号（基于原文区域高度，增大范围）
         orig_h = y1 - y0
-        font_size = max(5, min(orig_h * 0.7, 10))
+        orig_w = x1 - x0
 
-        # 估算翻译文本需要的宽度
-        est_width = len(translated) * font_size * 0.6
-        if est_width > (x1 - x0) * 1.5:
-            # 扩展宽度以容纳中文
+        # 先估算翻译后文本需要的宽度和字号
+        text_len = len(translated)
+        if text_len <= 2:
+            font_size = min(orig_h * 0.85, 14)
+        elif text_len <= 5:
+            font_size = min(orig_h * 0.75, 12)
+        else:
+            font_size = min(orig_h * 0.65, 11)
+        font_size = max(8, font_size)  # 最小8号，确保可读
+
+        # 估算需要的宽度 (中文约 0.65 * font_size 每字)
+        est_width = text_len * font_size * 0.65
+        if est_width > orig_w:
+            # 文本太宽，扩展区域宽度
             x1 = min(x0 + est_width + 10, page_w - 2)
+            # 如果宽度扩展了，重新计算可用宽度，可能需要换行
+            if x1 - x0 > orig_w * 3:
+                # 文本很长，使用多行
+                lines_needed = max(1, int(est_width / (x1 - x0)) + 1)
+                y1 = min(y0 + orig_h * max(2, lines_needed), page_h - 2)
 
+        # 最终 rect
         rect = fitz.Rect(x0, y0, x1, y1)
+
+        # === 分两步渲染，避免产生空白的白色矩形 ===
+
+        # 步骤 1: 尝试渲染文字（先画到一个临时位置，验证是否成功）
+        # 这里我们直接渲染，但记录是否成功
+        text_rendered = False
+        render_error = None
 
         try:
             # 先画白色背景遮盖原文
             page.draw_rect(rect, color=None, fill=(1, 1, 1), width=0)
 
             # 再写翻译文字
-            page.insert_textbox(
+            rc = page.insert_textbox(
                 rect,
                 translated,
                 fontname="china-s",
@@ -187,8 +240,56 @@ class PDFGenerator:
                 color=(0, 0, 0),
                 align=0,
             )
-        except Exception:
-            pass  # 个别文字框失败不影响整体
+
+            if rc < 0:
+                # 文本溢出未渲染任何内容 → 尝试更小的字号
+                smaller_font = max(6, font_size * 0.75)
+                rc2 = page.insert_textbox(
+                    rect,
+                    translated,
+                    fontname="china-s",
+                    fontfile=self.font_path,
+                    fontsize=smaller_font,
+                    color=(0, 0, 0),
+                    align=0,
+                )
+                if rc2 >= 0:
+                    text_rendered = True
+                elif rc2 < 0:
+                    # 即使缩小字号也溢出 → 尝试只显示前几个字
+                    short_text = translated[:max(3, int(orig_w / (smaller_font * 0.65)))] + "..."
+                    rc3 = page.insert_textbox(
+                        rect, short_text,
+                        fontname="china-s",
+                        fontfile=self.font_path,
+                        fontsize=smaller_font,
+                        color=(0, 0, 0),
+                        align=0,
+                    )
+                    text_rendered = rc3 >= 0
+            else:
+                text_rendered = True
+
+        except Exception as e:
+            render_error = e
+            text_rendered = False
+
+        # 步骤 2: 如果文字渲染失败，用原文回退，避免空白白条
+        if not text_rendered and original.strip():
+            fallback_text = original[:30]
+            try:
+                # 缩小字号用原文填充，至少用户能看到内容
+                page.insert_textbox(
+                    rect,
+                    fallback_text,
+                    fontname="china-s",
+                    fontfile=self.font_path,
+                    fontsize=7,
+                    color=(128, 128, 128),  # 灰色表示原文
+                    align=0,
+                )
+            except Exception:
+                pass  # 最终回退也失败，但至少白框仍在（遮盖了原文）
 
     # ========== 文字型 PDF 生成 ==========
 

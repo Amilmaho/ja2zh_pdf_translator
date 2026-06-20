@@ -141,11 +141,20 @@ class EasyOCREngine(OCREngine):
 class TesseractEngine(OCREngine):
     """Tesseract OCR 引擎 — 自动检测语言包，缺失时给出清晰指引"""
 
-    # 常见 tessdata 路径
+    # 常见 tessdata 路径 (跨平台)
     _COMMON_TESSDATA_PATHS = [
+        # macOS (Homebrew)
+        "/opt/homebrew/share/tessdata",
+        "/usr/local/share/tessdata",
+        "/opt/homebrew/Cellar/tesseract",
+        # Windows
         r"C:\Program Files\Tesseract-OCR\tessdata",
         r"C:\Program Files (x86)\Tesseract-OCR\tessdata",
         os.path.join(os.path.expanduser("~"), "AppData", "Local", "Programs", "Tesseract-OCR", "tessdata"),
+        # Linux
+        "/usr/share/tesseract-ocr/4.00/tessdata",
+        "/usr/share/tesseract-ocr/5/tessdata",
+        "/usr/share/tessdata",
     ]
 
     def __init__(self, lang: str = "jpn"):
@@ -175,9 +184,11 @@ class TesseractEngine(OCREngine):
                 raise RuntimeError(
                     f"Tesseract 缺少日语语言包 ({lang_file})。\n\n"
                     "请执行以下步骤:\n"
-                    f"  1. 下载: https://github.com/tesseract-ocr/tessdata/raw/main/jpn.traineddata\n"
-                    f"  2. 放到: {tessdata_dir or 'C:\\Program Files\\Tesseract-OCR\\tessdata'}\n"
-                    "  3. 重新运行程序\n\n"
+                    "  macOS: brew install tesseract-lang\n"
+                    "  或手动下载:\n"
+                    f"    1. 下载: https://github.com/tesseract-ocr/tessdata/raw/main/jpn.traineddata\n"
+                    f"    2. 放到: {tessdata_dir or '/opt/homebrew/share/tessdata'}\n"
+                    "    3. 重新运行程序\n\n"
                     "或切换到 EasyOCR:\n"
                     "  python main.py input.pdf --ocr easyocr"
                 )

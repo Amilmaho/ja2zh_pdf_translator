@@ -37,17 +37,23 @@ class Config:
     # OCR 引擎: "easyocr" | "tesseract"
     OCR_ENGINE = "easyocr"
 
-    # Tesseract 路径 (Windows 下需设置)
-    TESSERACT_CMD = os.getenv("TESSERACT_CMD", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+    # Tesseract 路径 (Windows/macOS 自适应)
+    _TESSERACT_DEFAULT = {
+        "darwin": "/opt/homebrew/bin/tesseract",  # Apple Silicon Mac
+        "win32": r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        "linux": "/usr/bin/tesseract",
+    }.get(os.uname().sysname.lower(), "tesseract")
+    TESSERACT_CMD = os.getenv("TESSERACT_CMD", _TESSERACT_DEFAULT)
 
-    # EasyOCR 语言列表 (日语 + 中文)
-    OCR_LANGUAGES = ["ja", "ch_sim"]
+    # EasyOCR 语言列表 — 只设日文 (日文 PDF 只需识别日文)
+    # 注意: EasyOCR 不支持 ja+ch_sim 混合使用，需单一语言
+    OCR_LANGUAGES = ["ja"]
 
     # ========== PDF 输出配置 ==========
-    # 中文字体路径 (Windows)
-    FONT_PATH = os.getenv("FONT_PATH", "C:/Windows/Fonts/simsun.ttc")
+    # 中文字体路径 (跨平台自动检测)
+    FONT_PATH = os.getenv("FONT_PATH", "")
     # 备用字体
-    FONT_PATH_FALLBACK = "C:/Windows/Fonts/msyh.ttc"
+    FONT_PATH_FALLBACK = ""
 
     # 页面大小 (A4)
     PAGE_WIDTH = 595

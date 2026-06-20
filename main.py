@@ -27,16 +27,21 @@ class JapanesePDFTranslator:
         pdf_path: str,
         output_path: str = None,
         translation_engine: str = None,
-        ocr_engine: str = None
+        ocr_engine: str = None,
+        page_range: str = None
     ):
         self.pdf_path = pdf_path
         self.pdf_name = Path(pdf_path).stem
 
+        # 解析页码范围: "1-5" 或 "1,3,5" 或 "1-5,10-20"
+        self.page_range = self._parse_page_range(page_range)
+
         # 设置输出路径
         if output_path is None:
+            suffix = f"_p{self.page_range[0]}-{self.page_range[-1]}" if self.page_range else ""
             self.output_path = os.path.join(
                 config.OUTPUT_DIR,
-                f"{self.pdf_name}_translated.pdf"
+                f"{self.pdf_name}{suffix}_translated.pdf"
             )
         else:
             self.output_path = output_path
@@ -56,6 +61,37 @@ class JapanesePDFTranslator:
         self.ocr: OCREngine = None
         self.translator: TranslationEngine = None
 
+    def _parse_page_range(self, page_range: str) -> list:
+        """解析页码范围字符串
+        
+        支持格式:
+          "1-5"     → [1,2,3,4,5]
+          "1,3,5"   → [1,3,5]
+          "1-5,10-15" → [1,2,3,4,5,10,11,12,13,14,15]
+          空/None   → None (全部页)
+        """
+        if not page_range or not page_range.strip():
+            return None
+        
+        result = set()
+        for part in page_range.split(","):
+            part = part.strip()
+            if "-" in part:
+                try:
+                    start, end = map(int, part.split("-", 1))
+                    result.update(range(start, end + 1))
+                except ValueError:
+                    continue
+            else:
+                try:
+                    result.add(int(part))
+                except ValueError:
+                    continue
+        
+        if not result:
+            return None
+        return sorted(result)
+
     def run(self):
         """主流程"""
         print("=" * 60)
@@ -64,6 +100,8 @@ class JapanesePDFTranslator:
         print(f"  输出: {self.output_path}")
         print(f"  翻译引擎: {config.TRANSLATION_ENGINE}")
         print(f"  OCR引擎: {config.OCR_ENGINE}")
+        if self.page_range:
+            print(f"  页码范围: {self.page_range[0]} - {self.page_range[-1]} ({len(self.page_range)} 页)")
         print("=" * 60)
 
         # 步骤 1: 初始化引擎
@@ -96,12 +134,21 @@ class JapanesePDFTranslator:
         print("=" * 60)
 
     def _extract_content(self) -> list:
-        """提取 PDF 中的所有内容"""
+        """提取 PDF 中的内容（支持页码范围）"""
         self.extractor = PDFExtractor(
             self.pdf_path,
             temp_dir=self.temp_dir
         )
-        pages_content = self.extractor.extract_all()
+        
+        if self.page_range:
+            # 只提取指定页面
+            pages_content = []
+            for page_num in self.page_range:
+                # page_range 是 1-based，extract_page 使用 0-based
+                page = self.extractor.extract_page(page_num - 1)
+                pages_content.append(page)
+        else:
+            pages_content = self.extractor.extract_all()
 
         total_text_blocks = sum(len(p.text_blocks) for p in pages_content)
         total_images = sum(len(p.image_blocks) for p in pages_content)
@@ -142,6 +189,20 @@ class JapanesePDFTranslator:
         ocr_results_per_page = []
         ocr_errors = 0
         translate_errors = 0
+        skipped_low_conf = 0
+        skipped_refusal = 0
+
+        # OCR 置信度阈值：低于此值的短文本直接丢弃
+        MIN_OCR_CONFIDENCE = 0.15
+
+        # 翻译引擎拒绝翻译的关键词
+        REFUSAL_KEYWORDS = [
+            "您似乎没有提供",
+            "请提供具体的",
+            "请提供需要翻译",
+            "您没有提供任何",
+            "你似乎没有提供",
+        ]
 
         for page in tqdm(pages_content, desc="  处理图片"):
             page_results = []
@@ -161,23 +222,48 @@ class JapanesePDFTranslator:
                     for ocr_r in ocr_results:
                         if not ocr_r.text.strip():
                             continue
+                        # 低置信度短文本跳过
+                        if ocr_r.confidence < MIN_OCR_CONFIDENCE and len(ocr_r.text.strip()) <= 3:
+                            skipped_low_conf += 1
+                            continue
                         try:
                             translated = self.translator.translate(ocr_r.text)
+
+                            # 检测翻译引擎拒绝响应
+                            is_refusal = any(kw in translated for kw in REFUSAL_KEYWORDS)
+                            if is_refusal:
+                                skipped_refusal += 1
+                                # 拒绝时用原文，避免空白
+                                img_translations.append({
+                                    "original": ocr_r.text,
+                                    "translated": ocr_r.text,
+                                    "bbox": ocr_r.bbox,
+                                    "confidence": ocr_r.confidence,
+                                })
+                                continue
+
                             img_translations.append({
                                 "original": ocr_r.text,
                                 "translated": translated,
-                                "bbox": ocr_r.bbox,  # 图片内坐标
+                                "bbox": ocr_r.bbox,
                                 "confidence": ocr_r.confidence,
                             })
                         except Exception as e:
                             translate_errors += 1
                             if translate_errors <= 5:
                                 tqdm.write(f"  [警告] 翻译OCR文字失败: {ocr_r.text[:20]}... - {e}")
+                            # 失败时保留原文
+                            img_translations.append({
+                                "original": ocr_r.text,
+                                "translated": ocr_r.text,
+                                "bbox": ocr_r.bbox,
+                                "confidence": ocr_r.confidence,
+                            })
 
                     if img_translations:
                         page_results.append({
                             "image_path": img_block.image_path,
-                            "image_bbox": img_block.bbox,  # PDF页面坐标
+                            "image_bbox": img_block.bbox,
                             "translations": img_translations,
                         })
 
@@ -190,8 +276,17 @@ class JapanesePDFTranslator:
 
         # 汇总
         total_ocr = sum(len(r) for r in ocr_results_per_page)
-        if ocr_errors or translate_errors:
-            tqdm.write(f"\n  ⚠ OCR失败: {ocr_errors}, 翻译失败: {translate_errors}")
+        if ocr_errors or translate_errors or skipped_low_conf or skipped_refusal:
+            parts = []
+            if ocr_errors:
+                parts.append(f"OCR失败: {ocr_errors}")
+            if translate_errors:
+                parts.append(f"翻译失败: {translate_errors}")
+            if skipped_low_conf:
+                parts.append(f"跳过低质量: {skipped_low_conf}")
+            if skipped_refusal:
+                parts.append(f"翻译拒绝: {skipped_refusal}")
+            tqdm.write(f"\n  ⚠ {' | '.join(parts)}")
 
         return ocr_results_per_page
 
@@ -239,6 +334,9 @@ def main():
   python main.py input.pdf --translator openai
   python main.py input.pdf --ocr tesseract
   python main.py input.pdf --translator google --ocr easyocr
+  python main.py input.pdf --pages 1-5           # 只翻译前5页
+  python main.py input.pdf --pages 1-5,10-20     # 翻译第1-5页和第10-20页
+  python main.py input.pdf --pages 1,3,5         # 只翻译第1/3/5页
         """
     )
 
@@ -266,6 +364,11 @@ def main():
         default="zh-CN",
         help="目标语言代码 (默认: zh-CN)"
     )
+    parser.add_argument(
+        "--pages",
+        default=None,
+        help="指定翻译的页码范围，如: 1-5, 1-5/10-20, 1/3/5 (默认: 全部)"
+    )
 
     args = parser.parse_args()
 
@@ -285,7 +388,8 @@ def main():
         pdf_path=args.pdf,
         output_path=args.output,
         translation_engine=args.translator,
-        ocr_engine=args.ocr
+        ocr_engine=args.ocr,
+        page_range=args.pages
     )
     translator.run()
 
