@@ -33,7 +33,8 @@ ja2zh_pdf_translator/
 │   ├── pdf_extractor.py    # PDFExtractor + PageContent/TextBlock/ImageBlock
 │   ├── ocr_engine.py       # OCREngine + EasyOCREngine + TesseractEngine
 │   ├── translator.py       # TranslationEngine + 4 种引擎实现
-│   └── pdf_generator.py    # PDFGenerator + SimplePDFGenerator
+│   ├── pdf_generator.py    # PDFGenerator + SimplePDFGenerator
+│   └── docx_reader.py      # 🆕 DocxReader + DocxContent（Phase 4 Step 1）
 ├── input/                  # 待翻译的文件
 ├── output/                 # 翻译后的文件
 └── temp/                   # 临时文件（图片等）

@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+### Added (Phase 4 - Step 1: DOCX Reader)
+- `modules/docx_reader.py` — DOCX 读取器（完全独立，不影响 PDF 功能）
+  - `DocxReader` 类 — 支持段落/标题/表格/图片/页眉页脚提取
+  - `DocxContent` — DOCX 文档完整中间表示
+  - `DocxParagraph` / `DocxHeading` / `DocxTable` / `DocxTableCell` / `DocxImage` — 专用数据结构
+  - 图片只保存和建立映射，不 OCR、不翻译
+  - `summary()` 方法生成结构摘要
+- `requirements.txt` — 添加 `python-docx`
+
 ### Added (Phase 2 - Step 2: Task Manager)
 - `core/__init__.py` — 核心调度层包
 - `core/task_manager.py` — TaskManager 统一任务管理器
