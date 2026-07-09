@@ -8,22 +8,93 @@
 
 | # | 任务 | 状态 | 负责人 | 备注 |
 |---|------|------|--------|------|
-| 1 | 项目初始化（Project Bootstrap） | 🔄 进行中 | AI Agent | 建立文档、设计架构、制定路线图 |
+| - | 暂无进行中任务 | - | - | 等待用户确认 Phase 2 Step 2 |
 
 ---
 
-## 📋 待执行任务（按优先级）
+## ✅ Phase 2 Step 2: Task Manager 统一任务管理层 — 已完成
 
-### Phase 2: Web UI
+### 新增文件
+| 文件 | 说明 |
+|------|------|
+| `core/__init__.py` | 核心调度层包 |
+| `core/task_manager.py` | TaskManager — 任务创建/执行/状态/日志/SSE回调 |
+| `core/dispatcher.py` | DocumentDispatcher — 格式分派 + PDF 适配器 + 预留接口 |
 
-| # | 任务 | 预计文件/修改 | 阻塞 |
-|---|------|---------------|------|
-| 2.1 | 设计 Web UI 架构 | `DESIGN.md` | 无 |
-| 2.2 | 创建 `web/app.py`（FastAPI） | `web/app.py`（新增）| 无 |
-| 2.3 | 创建 HTML 前端 | `web/templates/`, `web/static/`（新增）| 无 |
-| 2.4 | 拖拽上传 | `web/static/upload.js`（新增）| 无 |
-| 2.5 | 实时日志 SSE 推送 | `web/app.py` | 无 |
-| 2.6 | 翻译进度 WebSocket | `web/app.py` | 无 |
+### 修改文件
+| 文件 | 修改 |
+|------|------|
+| `web/app.py` | 重构：所有翻译请求通过 TaskManager（不再直连 JapanesePDFTranslator） |
+| `docs/ARCHITECTURE.md` | 添加 core/ 层、新模块关系图 |
+| `docs/TASKS.md` | 更新任务状态 |
+| `docs/CHANGELOG.md` | 记录变更 |
+
+### 调用链
+```
+Web UI → TaskManager → DocumentDispatcher → PDFTranslator(适配器) → JapanesePDFTranslator
+              ↑                                    ↑
+         CLI 也可调用                        未来: DOCX/Image/PPTX/EPUB
+```
+
+### 关键设计决策
+| 决策 | 说明 |
+|------|------|
+| DocumentTranslator 抽象基类 | 所有格式 Translator 的统一接口 |
+| PDFTranslator 是适配器 | 封装 JapanesePDFTranslator，不修改其代码 |
+| TaskManager 全局单例 | Web UI 和 CLI 共享同一个实例 |
+| SSE 回调机制 | TaskManager._log_callbacks 注册模式，完全解耦 |
+| 预留接口不实现 | DOCX/Image/PPTX/EPUB Translator 只有接口签名 + NotImplementedError |
+
+---
+
+## ✅ Phase 2 Step 1: Web UI 基础框架 — 已完成
+
+### 新增文件
+| 文件 | 说明 |
+|------|------|
+| `web/app.py` | FastAPI 应用：文件上传/设置管理/SSE日志/模拟日志 |
+| `web/templates/index.html` | 主页面：拖拽上传区 + 设置面板 + 日志区 |
+| `web/static/style.css` | 样式：暗色日志/响应式/拖拽动画 |
+| `web/static/app.js` | 前端：拖拽上传/SSE日志流/文件管理 |
+
+### 修改文件
+| 文件 | 修改 |
+|------|------|
+| `requirements.txt` | +fastapi, uvicorn, python-multipart, sse-starlette |
+| `CHANGELOG.md` | 记录变更 |
+| `TASKS.md` | 更新任务状态 |
+
+### ⚠️ 已知问题
+| # | 问题 | 说明 |
+|---|------|------|
+| W1 | Jinja2 500错误 | `Jinja2Templates` 的 `env.globals` 与 Starlette 兼容性问题，已通过移除 `request` 参数修复 |
+| W2 | 模板 500 | 问题在 FastAPI + Jinja2Templates 的 `url_for` 注入机制，当前通过简化模板变量绕过 |
+
+### 如何启动
+```bash
+cd /Users/qwe123/Desktop/work/ja2zh_pdf_translator
+python3 -m uvicorn web.app:app --host 0.0.0.0 --port 8000
+# 浏览器: http://127.0.0.1:8000
+```
+
+### 可用 API
+| Method | Path | 说明 |
+|--------|------|------|
+| GET | `/` | 主页面 |
+| GET | `/api/health` | 健康检查 |
+| POST | `/api/upload` | 批量上传文件 |
+| DELETE | `/api/upload/{id}` | 删除文件 |
+| GET | `/api/files` | 文件列表 |
+| GET | `/api/settings` | 获取设置 |
+| POST | `/api/settings` | 更新设置（预留） |
+| GET | `/api/logs/{task_id}` | SSE 日志流 |
+| POST | `/api/test-log` | 模拟日志（测试用） |
+
+### 下一步（等待确认）
+| # | 任务 | 修改文件 |
+|---|------|----------|
+| 2.2 | 接入翻译逻辑 | `web/app.py` + `main.py` |
+| 2.3 | 设置持久化（.env读写） | `web/app.py` + `config.py` |
 
 ### Phase 3: PDF 页码范围增强
 

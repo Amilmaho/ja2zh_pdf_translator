@@ -1,0 +1,179 @@
+/* ── 基础变量 ─────────────────────────────── */
+:root {
+    --bg: #f8f9fb;
+    --bg-panel: #ffffff;
+    --border: #e5e7eb;
+    --text: #1f2937;
+    --text-secondary: #6b7280;
+    --primary: #4f46e5;
+    --primary-hover: #4338ca;
+    --primary-light: #eef2ff;
+    --success: #10b981;
+    --warning: #f59e0b;
+    --error: #ef4444;
+    --shadow: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06);
+    --radius: 12px;
+    --radius-sm: 8px;
+}
+
+/* ── 重置 ──────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    min-height: 100vh;
+}
+
+/* ── 头部 ──────────────────────────────────── */
+.header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 28px; background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    box-shadow: var(--shadow); position: sticky; top: 0; z-index: 100;
+}
+.header-left { display: flex; align-items: center; gap: 12px; }
+.logo { font-size: 20px; font-weight: 700; }
+.version { font-size: 13px; color: var(--text-secondary); background: #f3f4f6; padding: 3px 10px; border-radius: 20px; }
+.header-right { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--text-secondary); }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); display: inline-block; }
+.status-dot.busy { background: var(--warning); animation: pulse-dot 1s infinite; }
+@keyframes pulse-dot { 0%,100% { opacity:1; } 50% { opacity:.4; } }
+
+/* ── 主布局 ────────────────────────────────── */
+.main-container {
+    display: grid; grid-template-columns: 420px 1fr;
+    gap: 24px; padding: 24px 28px; max-width: 1400px; margin: 0 auto;
+    min-height: calc(100vh - 73px);
+}
+@media (max-width: 900px) {
+    .main-container { grid-template-columns: 1fr; }
+}
+
+/* ── 面板 ──────────────────────────────────── */
+.panel { background: var(--bg-panel); border-radius: var(--radius); box-shadow: var(--shadow); padding: 24px; }
+.panel h2 { font-size: 16px; font-weight: 600; margin-bottom: 16px; color: var(--text); }
+.panel-right { display: flex; flex-direction: column; gap: 8px; }
+
+/* ── 拖拽上传区 ────────────────────────────── */
+.dropzone {
+    border: 2px dashed var(--border); border-radius: var(--radius);
+    padding: 36px 20px; text-align: center; cursor: pointer;
+    transition: all .2s; background: #fafbfc;
+}
+.dropzone:hover { border-color: var(--primary); background: var(--primary-light); }
+.dropzone-icon { font-size: 40px; margin-bottom: 10px; }
+.dropzone-text { font-size: 15px; color: var(--text); margin-bottom: 4px; }
+.dropzone-hint { font-size: 13px; color: var(--text-secondary); }
+.dropzone-active {
+    display: none; border: 2px dashed var(--primary); border-radius: var(--radius);
+    padding: 36px 20px; text-align: center; background: var(--primary-light);
+}
+.dropzone-active .pulse { animation: pulse-icon .8s infinite; }
+@keyframes pulse-icon { 0%,100% { transform:scale(1); } 50% { transform:scale(1.1); } }
+
+.dragover .dropzone { display: none; }
+.dragover .dropzone-active { display: block; }
+
+.btn-outline {
+    display: inline-block; margin-top: 12px; padding: 8px 20px;
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--bg-panel); color: var(--text); font-size: 14px;
+    cursor: pointer; transition: all .15s;
+}
+.btn-outline:hover { border-color: var(--primary); color: var(--primary); }
+
+/* ── 文件列表 ──────────────────────────────── */
+.file-list { margin-top: 16px; }
+.file-list-empty { text-align: center; color: var(--text-secondary); font-size: 14px; padding: 16px; }
+.file-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px; border-radius: var(--radius-sm); margin-bottom: 6px;
+    background: #f9fafb; border: 1px solid var(--border); transition: background .15s;
+}
+.file-item:hover { background: var(--primary-light); }
+.file-item-icon { font-size: 24px; flex-shrink: 0; }
+.file-item-info { flex: 1; min-width: 0; }
+.file-item-name { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-item-meta { font-size: 12px; color: var(--text-secondary); }
+.file-item-remove {
+    flex-shrink: 0; width: 28px; height: 28px; border: none; background: none;
+    font-size: 18px; cursor: pointer; border-radius: 50%; color: var(--text-secondary);
+    display: flex; align-items: center; justify-content: center; transition: all .15s;
+}
+.file-item-remove:hover { background: #fee2e2; color: var(--error); }
+.file-item.error { border-color: #fecaca; background: #fef2f2; }
+
+/* ── 设置面板 ──────────────────────────────── */
+.settings-grid { display: grid; gap: 12px; margin-bottom: 8px; }
+.setting-item { display: flex; align-items: center; gap: 12px; }
+.setting-item label {
+    font-size: 14px; color: var(--text-secondary); min-width: 80px;
+    text-align: right; flex-shrink: 0;
+}
+.setting-item select, .setting-item input[type="text"] {
+    flex: 1; padding: 8px 12px; border: 1px solid var(--border);
+    border-radius: var(--radius-sm); font-size: 14px; background: #fff;
+    transition: border-color .15s;
+}
+.setting-item select:focus, .setting-item input[type="text"]:focus {
+    outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light);
+}
+
+.setting-section-label {
+    font-size: 13px; font-weight: 600; color: var(--text-secondary);
+    padding: 6px 0 2px 92px; text-transform: uppercase; letter-spacing: .3px;
+}
+
+.setting-row { display: flex; align-items: center; padding-left: 92px; }
+
+/* Switch */
+.switch-label { display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 14px; }
+.switch {
+    position: relative; display: inline-block; width: 40px; height: 22px;
+    background: #d1d5db; border-radius: 11px; transition: background .2s;
+}
+.switch::after {
+    content: ''; position: absolute; top: 2px; left: 2px;
+    width: 18px; height: 18px; background: #fff; border-radius: 50%;
+    transition: transform .2s; box-shadow: 0 1px 3px rgba(0,0,0,.15);
+}
+.switch-label input:checked + .switch { background: var(--primary); }
+.switch-label input:checked + .switch::after { transform: translateX(18px); }
+.switch-label input { position: absolute; opacity: 0; pointer-events: none; }
+
+/* ── 按钮 ──────────────────────────────────── */
+.actions { display: flex; gap: 10px; margin-top: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.btn { padding: 10px 22px; border-radius: var(--radius-sm); font-size: 14px; font-weight: 500; cursor: pointer; border: none; transition: all .15s; }
+.btn-primary { background: var(--primary); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
+.btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ── 日志 ──────────────────────────────────── */
+.log-container {
+    flex: 1; background: #1e1e2e; border-radius: var(--radius-sm);
+    padding: 14px; overflow-y: auto; max-height: 360px; min-height: 120px;
+    font-family: "SF Mono", "Fira Code", "Consolas", monospace; font-size: 13px;
+    line-height: 1.7;
+}
+.log-empty { color: #6c7086; text-align: center; padding: 30px 0; }
+.log-line { display: flex; gap: 8px; padding: 1px 0; }
+.log-time { color: #6c7086; flex-shrink: 0; }
+.log-level { flex-shrink: 0; font-weight: 600; min-width: 48px; }
+.log-level.info { color: #89b4fa; }
+.log-level.success { color: #a6e3a1; }
+.log-level.warning { color: #fab387; }
+.log-level.error { color: #f38ba8; }
+.log-msg { color: #cdd6f4; word-break: break-all; }
+
+/* ── 进度条 ────────────────────────────────── */
+.progress-bar {
+    width: 100%; height: 4px; background: #313244; border-radius: 2px;
+    margin-top: 4px; overflow: hidden;
+}
+.progress-bar-fill { height: 100%; background: var(--primary); border-radius: 2px; transition: width .3s ease; }
+
+/* ── 隐藏/显示 ─────────────────────────────── */
+.hidden { display: none !important; }

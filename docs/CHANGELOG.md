@@ -6,8 +6,35 @@
 
 ## [Unreleased]
 
+### Added (Phase 2 - Step 2: Task Manager)
+- `core/__init__.py` — 核心调度层包
+- `core/task_manager.py` — TaskManager 统一任务管理器
+  - 创建/查询/取消任务
+  - 状态机：Waiting → Running → Success/Failed/Cancelled
+  - 任务日志 + SSE 回调 + 进度推送
+  - 批量任务 + 多任务队列（串行执行，预留并发接口）
+  - 全局单例 `get_task_manager()`
+- `core/dispatcher.py` — DocumentDispatcher 格式分派器
+  - `DocumentTranslator` 抽象基类（定义统一接口）
+  - `PDFTranslator` 适配器（封装 `JapanesePDFTranslator`）
+  - `DOCXTranslator` / `ImageTranslator` / `PPTXTranslator` / `EPUBTranslator`（预留接口）
+  - `DispatchResult` 统一返回结构
+- `web/app.py` — 重构接入 TaskManager
+  - 所有翻译请求通过 TaskManager
+  - SSE 日志通过 TaskManager 回调推送
+  - 新增 `/api/translate`（正式翻译）、`/api/tasks`（任务列表）、`/api/download/{id}`（下载）
+  - Web UI 不再直接调用 `JapanesePDFTranslator`
+
+### Added (Phase 2 - Step 1)
+- `web/app.py` — FastAPI 应用（文件上传、设置管理、SSE 日志推送）
+- `web/templates/index.html` — 主页面（拖拽上传 + 设置面板 + 日志）
+- `web/static/style.css` — 完整样式（暗色日志 / 拖拽动画 / 响应式）
+- `web/static/app.js` — 前端交互（拖拽上传 / SSE / 文件管理）
+- `requirements.txt` — 添加 `fastapi`, `uvicorn`, `python-multipart`, `sse-starlette`
+
 ### Planned
-- Phase 2: Web UI
+- Phase 2 Step 2: 接入翻译逻辑
+- Phase 2 Step 3: 设置持久化（`.env` 读写）
 - Phase 3: PDF 页码范围增强（已完成）
 - Phase 4: DOCX Reader
 - Phase 5: DOCX Writer

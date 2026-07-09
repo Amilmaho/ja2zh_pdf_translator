@@ -15,15 +15,27 @@ ja2zh_pdf_translator/
 │   ├── TASKS.md
 │   ├── DESIGN.md
 │   ├── CHANGELOG.md
+│   ├── DEVELOPMENT_PLAN.md
 │   └── README_DEVELOPMENT.md
+├── core/                   # 🆕 核心调度层（Phase 2 Step 2）
+│   ├── __init__.py
+│   ├── task_manager.py     # TaskManager — 统一任务管理
+│   └── dispatcher.py       # DocumentDispatcher — 格式分派
+├── web/                    # 🆕 Web UI（Phase 2 Step 1）
+│   ├── app.py              # FastAPI 应用
+│   ├── templates/
+│   │   └── index.html
+│   └── static/
+│       ├── style.css
+│       └── app.js
 ├── modules/
 │   ├── __init__.py
 │   ├── pdf_extractor.py    # PDFExtractor + PageContent/TextBlock/ImageBlock
 │   ├── ocr_engine.py       # OCREngine + EasyOCREngine + TesseractEngine
 │   ├── translator.py       # TranslationEngine + 4 种引擎实现
 │   └── pdf_generator.py    # PDFGenerator + SimplePDFGenerator
-├── input/                  # 待翻译的 PDF
-├── output/                 # 翻译后的 PDF
+├── input/                  # 待翻译的文件
+├── output/                 # 翻译后的文件
 └── temp/                   # 临时文件（图片等）
 ```
 
@@ -33,11 +45,43 @@ ja2zh_pdf_translator/
 
 ```mermaid
 graph TD
-    main[main.py<br/>JapanesePDFTranslator] --> config[config.py<br/>Config]
-    main --> extractor[pdf_extractor.py<br/>PDFExtractor]
-    main --> ocr[ocr_engine.py<br/>OCREngine]
-    main --> translator[translator.py<br/>TranslationEngine]
-    main --> generator[pdf_generator.py<br/>PDFGenerator]
+    subgraph "入口层"
+        CLI[main.py<br/>CLI 入口]
+        Web[web/app.py<br/>FastAPI Web UI]
+    end
+
+    subgraph "调度层 (core/)"
+        TM[core/task_manager.py<br/>TaskManager]
+        DP[core/dispatcher.py<br/>DocumentDispatcher]
+        PDFT[PDFTranslator 适配器]
+        DOCXT[DOCXTranslator<br/>📌 预留]
+        IMGT[ImageTranslator<br/>📌 预留]
+    end
+
+    subgraph "业务层 (modules/)"
+        EXT[pdf_extractor.py<br/>PDFExtractor]
+        OCR[ocr_engine.py<br/>OCREngine]
+        TR[translator.py<br/>TranslationEngine]
+        GEN[pdf_generator.py<br/>PDFGenerator]
+    end
+
+    subgraph "配置"
+        CFG[config.py<br/>Config]
+    end
+
+    CLI --> TM
+    Web --> TM
+    TM --> DP
+    DP --> PDFT
+    DP -.-> DOCXT
+    DP -.-> IMGT
+    PDFT --> EXT
+    PDFT --> OCR
+    PDFT --> TR
+    PDFT --> GEN
+    TM --> CFG
+    PDFT --> CFG
+```
 
     extractor --> |PageContent| main
     ocr --> |OCRResult| main

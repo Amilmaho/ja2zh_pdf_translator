@@ -1,0 +1,276 @@
+"""
+Document Dispatcher - 文档格式分派器（Phase 2 Step 2）
+
+职责：
+  根据文件类型自动选择对应的 Parser。
+  目前只支持 PDF，DOCX/Image/PPTX/EPUB 仅保留接口。
+
+调用链：
+  TaskManager → DocumentDispatcher.dispatch(task) → PDFTranslator (未来: DOCX...)
+"""
+
+import os
+import sys
+import time
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Optional, List, Callable
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from config import config
+
+
+# ── 数据结构 ──────────────────────────────────────────────
+
+@dataclass
+class DispatchResult:
+    """分派执行结果"""
+    task_id: str
+    file_path: str
+    file_format: str
+    success: bool
+    output_path: str = ""
+    error: str = ""
+    stats: dict = field(default_factory=dict)  # 统计信息
+
+
+# ── Translator 抽象基类（未来所有格式 Translator 的接口）────
+
+class DocumentTranslator(ABC):
+    """
+    文档翻译器抽象基类。
+    
+    所有格式的 Translator 必须实现此接口：
+      - PDFTranslator (已有，需适配)
+      - DOCXTranslator (未来)
+      - ImageTranslator (未来)
+      - PPTXTranslator (未来)
+      - EPUBTranslator (未来)
+    """
+
+    @abstractmethod
+    def translate(
+        self,
+        file_path: str,
+        output_path: str,
+        translation_engine: str = None,
+        ocr_engine: str = None,
+        page_range: str = None,
+        log_callback: Callable = None,
+        progress_callback: Callable = None,
+        **kwargs,
+    ) -> DispatchResult:
+        """
+        执行翻译。
+
+        Args:
+            file_path: 输入文件路径
+            output_path: 输出文件路径
+            translation_engine: 翻译引擎名称
+            ocr_engine: OCR 引擎名称
+            page_range: 页码范围
+            log_callback: 日志回调 fn(message, level, progress)
+            progress_callback: 进度回调 fn(percent)
+
+        Returns:
+            DispatchResult: 翻译结果
+        """
+        ...
+
+
+# ── PDF Translator 适配器 ────────────────────────────────
+
+class PDFTranslator(DocumentTranslator):
+    """
+    PDF 翻译器 — 适配现有的 JapanesePDFTranslator。
+
+    注意：这是一个适配器层，不修改 JapanesePDFTranslator 的核心逻辑。
+    """
+
+    def translate(
+        self,
+        file_path: str,
+        output_path: str,
+        translation_engine: str = None,
+        ocr_engine: str = None,
+        page_range: str = None,
+        log_callback: Callable = None,
+        progress_callback: Callable = None,
+        **kwargs,
+    ) -> DispatchResult:
+        from main import JapanesePDFTranslator
+
+        def log(msg, level="info", progress=0):
+            if log_callback:
+                log_callback(msg, level, progress)
+
+        try:
+            log(f"开始处理 PDF: {os.path.basename(file_path)}", "info", 1)
+
+            translator = JapanesePDFTranslator(
+                pdf_path=file_path,
+                output_path=output_path,
+                translation_engine=translation_engine,
+                ocr_engine=ocr_engine,
+                page_range=page_range,
+            )
+
+            # 注入进度和日志回调到 translator
+            # 注意：这里通过 monkey-patch 方式为 JapanesePDFTranslator 添加回调，
+            # 而不是修改其内部代码。未来重构 JapanesePDFTranslator 时再改为正式接口。
+            translator._log_callback = log
+            translator._progress_callback = progress_callback
+
+            log("初始化引擎...", "info", 2)
+            translator.translator = self._create_translator(translation_engine)
+            translator.ocr = self._create_ocr(ocr_engine)
+
+            log("提取 PDF 文字和图片...", "info", 10)
+            pages_content = translator._extract_content()
+            log(f"提取完成: {len(pages_content)} 页", "success", 40)
+
+            log("翻译文字内容...", "info", 50)
+            translated_texts = translator._translate_text(pages_content)
+
+            log("OCR 识别并翻译图片文字...", "info", 65)
+            ocr_results_per_page = translator._ocr_and_translate_images(pages_content)
+
+            log("生成翻译后 PDF...", "info", 85)
+            translator._generate_pdf(pages_content, translated_texts, ocr_results_per_page)
+
+            log(f"✅ 翻译完成！输出: {output_path}", "success", 100)
+
+            return DispatchResult(
+                task_id="",
+                file_path=file_path,
+                file_format="pdf",
+                success=True,
+                output_path=output_path,
+                stats={
+                    "pages": len(pages_content),
+                    "text_blocks": sum(len(t) for t in translated_texts),
+                    "ocr_regions": sum(len(r) for r in ocr_results_per_page),
+                },
+            )
+
+        except Exception as e:
+            log(f"❌ 翻译失败: {e}", "error")
+            import traceback
+            traceback.print_exc()
+            return DispatchResult(
+                task_id="",
+                file_path=file_path,
+                file_format="pdf",
+                success=False,
+                error=str(e),
+            )
+
+    def _create_translator(self, engine_name: str = None):
+        from modules.translator import create_translation_engine
+        if engine_name:
+            config.TRANSLATION_ENGINE = engine_name
+        return create_translation_engine()
+
+    def _create_ocr(self, engine_name: str = None):
+        from modules.ocr_engine import create_ocr_engine
+        if engine_name:
+            config.OCR_ENGINE = engine_name
+        return create_ocr_engine()
+
+
+# ── 预留 Translator（接口占位，不实现逻辑）─────────────────
+
+class DOCXTranslator(DocumentTranslator):
+    """DOCX 翻译器（预留接口，未来实现）"""
+    def translate(self, file_path, output_path, **kwargs):
+        raise NotImplementedError("DOCX 翻译将在 Phase 4/5 实现")
+
+
+class ImageTranslator(DocumentTranslator):
+    """图片翻译器（预留接口，未来实现）"""
+    def translate(self, file_path, output_path, **kwargs):
+        raise NotImplementedError("图片翻译将在 Phase 6 实现")
+
+
+class PPTXTranslator(DocumentTranslator):
+    """PPTX 翻译器（预留接口，未来实现）"""
+    def translate(self, file_path, output_path, **kwargs):
+        raise NotImplementedError("PPTX 翻译将在 Phase 7 实现")
+
+
+class EPUBTranslator(DocumentTranslator):
+    """EPUB 翻译器（预留接口，未来实现）"""
+    def translate(self, file_path, output_path, **kwargs):
+        raise NotImplementedError("EPUB 翻译将在 Phase 8 实现")
+
+
+# ── Dispatcher ────────────────────────────────────────────
+
+class DocumentDispatcher:
+    """
+    文档格式分派器。
+
+    根据文件扩展名自动选择对应的 Translator。
+    目前只支持 PDF，其他格式保留接口。
+
+    使用方式:
+        dispatcher = DocumentDispatcher()
+        result = dispatcher.dispatch(task)
+    """
+
+    # 格式 → Translator 类映射
+    _TRANSLATOR_MAP = {
+        "pdf": PDFTranslator,
+        "docx": DOCXTranslator,       # 预留
+        "pptx": PPTXTranslator,       # 预留
+        "epub": EPUBTranslator,       # 预留
+        "png": ImageTranslator,       # 预留
+        "jpg": ImageTranslator,       # 预留
+        "jpeg": ImageTranslator,      # 预留
+    }
+
+    def __init__(
+        self,
+        log_callback: Callable = None,
+        progress_callback: Callable = None,
+    ):
+        self._log = log_callback or (lambda msg, level, p: None)
+        self._progress = progress_callback or (lambda p: None)
+
+    def dispatch(self, task) -> DispatchResult:
+        """
+        分派翻译任务。
+
+        Args:
+            task: Task 对象（来自 TaskManager）
+
+        Returns:
+            DispatchResult: 翻译结果
+        """
+        fmt = task.file_format.lower()
+
+        translator_cls = self._TRANSLATOR_MAP.get(fmt)
+        if translator_cls is None:
+            return DispatchResult(
+                task_id=task.id,
+                file_path=task.file_path,
+                file_format=fmt,
+                success=False,
+                error=f"不支持的文件格式: {fmt}（支持: {', '.join(self._TRANSLATOR_MAP.keys())}）",
+            )
+
+        translator = translator_cls()
+        result = translator.translate(
+            file_path=task.file_path,
+            output_path=task.output_path,
+            translation_engine=task.config.translation_engine,
+            ocr_engine=task.config.ocr_engine,
+            page_range=task.config.page_range,
+            log_callback=self._log,
+            progress_callback=self._progress,
+        )
+
+        result.task_id = task.id
+        return result

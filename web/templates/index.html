@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>日文翻译工具 — Web UI</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- 顶部导航 -->
+    <header class="header">
+        <div class="header-left">
+            <h1 class="logo">📖 日文翻译工具</h1>
+            <span class="version">v0.2.0</span>
+        </div>
+        <div class="header-right">
+            <span class="status-dot" id="statusDot"></span>
+            <span id="statusText">就绪</span>
+        </div>
+    </header>
+
+    <main class="main-container">
+        <!-- 左侧：上传 + 文件列表 -->
+        <section class="panel panel-upload">
+            <h2>📤 上传文件</h2>
+
+            <!-- 拖拽上传区域 -->
+            <div class="dropzone" id="dropzone">
+                <div class="dropzone-icon">📂</div>
+                <p class="dropzone-text">拖拽文件到这里<br><span class="dropzone-hint">支持 PDF / DOCX（可批量上传）</span></p>
+                <input type="file" id="fileInput" multiple accept=".pdf,.docx" hidden>
+                <button class="btn btn-outline" id="browseBtn">选择文件</button>
+            </div>
+            <div class="dropzone-active" id="dropzoneActive">
+                <div class="dropzone-icon pulse">📥</div>
+                <p>松开以添加文件</p>
+            </div>
+
+            <!-- 文件列表 -->
+            <div class="file-list" id="fileList">
+                <div class="file-list-empty">暂无文件，请上传</div>
+            </div>
+        </section>
+
+        <!-- 右侧：设置 + 操作 + 日志 -->
+        <section class="panel panel-right">
+            <!-- 翻译设置 -->
+            <h2>⚙️ 翻译设置</h2>
+            <div class="settings-grid">
+                <div class="setting-item">
+                    <label>翻译引擎</label>
+                    <select id="settingTranslator">
+                        <option value="deepseek">DeepSeek（推荐）</option>
+                        <option value="google">Google（免费）</option>
+                        <option value="openai">OpenAI GPT</option>
+                        <option value="deepl">DeepL</option>
+                    </select>
+                </div>
+                <div class="setting-item">
+                    <label>OCR 引擎</label>
+                    <select id="settingOCR">
+                        <option value="easyocr">EasyOCR（推荐）</option>
+                        <option value="tesseract">Tesseract</option>
+                    </select>
+                </div>
+                <div class="setting-item">
+                    <label>输出目录</label>
+                    <input type="text" id="settingOutputDir" value="output/" placeholder="output/">
+                </div>
+
+                <!-- PDF 专属设置 -->
+                <div class="setting-section-label pdf-only">📄 PDF 页码范围</div>
+                <div class="setting-item pdf-only">
+                    <label>页码范围</label>
+                    <input type="text" id="settingPageRange" placeholder="例: 1-5, 10-20（留空=全部）">
+                </div>
+
+                <!-- DOCX 专属设置 -->
+                <div class="setting-section-label docx-only">📝 DOCX 选项</div>
+                <div class="setting-row docx-only">
+                    <label class="switch-label">
+                        <input type="checkbox" id="settingDocxImages" checked>
+                        <span class="switch"></span>
+                        翻译图片文字
+                    </label>
+                </div>
+                <div class="setting-row docx-only">
+                    <label class="switch-label">
+                        <input type="checkbox" id="settingDocxHeaders" checked>
+                        <span class="switch"></span>
+                        翻译页眉页脚
+                    </label>
+                </div>
+                <div class="setting-row docx-only">
+                    <label class="switch-label">
+                        <input type="checkbox" id="settingDocxTables" checked>
+                        <span class="switch"></span>
+                        翻译表格
+                    </label>
+                </div>
+            </div>
+
+            <!-- 操作按钮 -->
+            <div class="actions">
+                <button class="btn btn-primary" id="startBtn" disabled>
+                    🚀 开始翻译
+                </button>
+                <button class="btn btn-outline" id="clearBtn">
+                    🗑 清空文件
+                </button>
+                <button class="btn btn-outline" id="testLogBtn">
+                    🧪 测试日志流
+                </button>
+            </div>
+
+            <!-- 日志区域 -->
+            <h2>📋 实时日志</h2>
+            <div class="log-container" id="logContainer">
+                <div class="log-empty" id="logEmpty">点击"开始翻译"或"测试日志流"查看实时日志</div>
+            </div>
+        </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
