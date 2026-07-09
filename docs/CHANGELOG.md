@@ -6,6 +6,14 @@
 
 ## [Unreleased]
 
+### Added (Phase 4 - Step 2: DOCX 图片 OCR)
+- `modules/docx_reader.py` — 新增 `ocr_images()` 静态方法和 `get_ocr_summary()`
+  - `DocxImage` 新增 `ocr_results` 字段和 `has_ocr` 属性
+  - 复用现有 `OCREngine.recognize_file()`，零修改 OCR 模块
+  - 置信度过滤（min_confidence 可配置）
+  - tqdm 进度条 + 异常容错
+  - 测试验证：从真实 PDF 日文图片中识别到 6 个日文区域
+
 ### Added (Phase 4 - Step 1: DOCX Reader)
 - `modules/docx_reader.py` — DOCX 读取器（完全独立，不影响 PDF 功能）
   - `DocxReader` 类 — 支持段落/标题/表格/图片/页眉页脚提取

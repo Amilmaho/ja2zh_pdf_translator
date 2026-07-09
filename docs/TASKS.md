@@ -146,12 +146,13 @@ python3 -m uvicorn web.app:app --host 0.0.0.0 --port 8000
 |---|------|---------------|------|
 | 3.1 | （已完成）页码范围解析 | `main.py:_parse_page_range` | - |
 
-### Phase 4: DOCX Reader
+### Phase 4: DOCX 支持 🔄
 
-| # | 任务 | 预计文件/修改 | 阻塞 |
+| # | 任务 | 预计文件/修改 | 状态 |
 |---|------|---------------|------|
-| 4.1 | DOCX 文字提取器 | `modules/docx_reader.py`（新增）| Web UI 完成 |
-| 4.2 | DOCX 图片提取 | `modules/docx_reader.py` | 无 |
+| 4.1 | DOCX Reader（段落/标题/表格/图片） | `modules/docx_reader.py` | ✅ 完成 |
+| 4.2 | DOCX 图片 OCR | `modules/docx_reader.py`（修改） | ✅ 完成 |
+| 4.3 | DOCX Writer | `modules/docx_writer.py`（新增） | □ 等待确认 |
 
 ### Phase 5: DOCX Writer
 

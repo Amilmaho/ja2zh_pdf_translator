@@ -100,10 +100,16 @@ class DocxImage:
     paragraph_index: int = 0              # 所在段落序号
     content_type: str = ""                # MIME 类型
     index: int = 0                        # 图片序号
+    ocr_results: List = field(default_factory=list)  # 🆕 OCR 结果列表
 
     @property
     def size(self) -> Tuple[int, int]:
         return (self.width_px, self.height_px)
+
+    @property
+    def has_ocr(self) -> bool:
+        """是否已完成 OCR"""
+        return len(self.ocr_results) > 0
 
 
 @dataclass
@@ -477,6 +483,72 @@ class DocxReader:
             "image/x-wmf": "wmf",
         }
         return mapping.get(content_type, "png")
+
+    # ── OCR（Phase 4 Step 2）────────────────────────────────
+
+    @staticmethod
+    def ocr_images(content: DocxContent, ocr_engine, min_confidence: float = 0.15):
+        """
+        对 DocxContent 中所有图片进行 OCR 识别。
+
+        Args:
+            content: DocxContent 对象（已提取的文档内容）
+            ocr_engine: OCREngine 实例（通过 create_ocr_engine() 创建）
+            min_confidence: 最低置信度阈值
+
+        Returns:
+            DocxContent: 同一对象（已填充 ocr_results）
+        """
+        from tqdm import tqdm
+
+        results = []
+        for img in tqdm(content.images, desc="  OCR识别图片"):
+            if not img.image_path or not os.path.exists(img.image_path):
+                continue
+
+            try:
+                # 复用现有 OCREngine.recognize_file()
+                ocr_results = ocr_engine.recognize_file(img.image_path)
+
+                # 存储结果
+                img.ocr_results = []
+                for r in ocr_results:
+                    if not r.text.strip():
+                        continue
+                    # 低置信度短文本跳过
+                    if r.confidence < min_confidence and len(r.text.strip()) <= 3:
+                        continue
+                    img.ocr_results.append(r)
+
+                results.append({
+                    "image_index": img.index,
+                    "path": img.image_path,
+                    "regions": len(img.ocr_results),
+                    "texts": [r.text for r in img.ocr_results],
+                })
+
+            except Exception as e:
+                # OCR 失败不影响其他图片
+                tqdm.write(f"  [警告] 图片[{img.index}] OCR失败: {str(e)[:60]}")
+
+        return content
+
+    @staticmethod
+    def get_ocr_summary(content: DocxContent) -> str:
+        """生成 OCR 结果摘要"""
+        lines = []
+        for img in content.images:
+            if img.has_ocr:
+                lines.append(
+                    f"  图片[{img.index}]: {len(img.ocr_results)} 个文字区域"
+                )
+                for r in img.ocr_results[:3]:
+                    lines.append(
+                        f"    [{r.confidence:.2f}] \"{r.text[:40]}\""
+                    )
+                if len(img.ocr_results) > 3:
+                    lines.append(f"    ... 共 {len(img.ocr_results)} 个")
+        return "\n".join(lines) if lines else "  (无OCR结果)"
 
     # ── 摘要 ───────────────────────────────────────────────
 

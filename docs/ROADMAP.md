@@ -55,16 +55,16 @@
 
 ---
 
-## Phase 4: DOCX Reader □
+## Phase 4: DOCX Reader 🔄
 
-| 功能 | 状态 | 优先级 |
-|------|------|--------|
-| DOCX 文字提取（python-docx） | □ 未开始 | 🔴 高 |
-| DOCX 标题/段落结构 | □ 未开始 | 🔴 高 |
-| DOCX 表格提取 | □ 未开始 | 🟡 中 |
-| DOCX 页眉页脚提取 | □ 未开始 | 🟡 中 |
-| DOCX 图片提取 | □ 未开始 | 🔴 高 |
-| DOCX 图片 OCR（复用 OCR） | □ 未开始 | 🔴 高 |
+| 功能 | 状态 |
+|------|------|
+| DOCX 段落提取 | ✅ Step 1 完成 |
+| DOCX 标题提取 | ✅ Step 1 完成 |
+| DOCX 表格提取 | ✅ Step 1 完成 |
+| DOCX 图片提取 | ✅ Step 1 完成 |
+| DOCX 页眉页脚提取 | ✅ Step 1 完成 |
+| DOCX 图片 OCR（复用 OCR 引擎） | ✅ **Step 2 完成** |
 
 ---
 
