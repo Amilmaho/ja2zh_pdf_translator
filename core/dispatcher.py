@@ -183,9 +183,146 @@ class PDFTranslator(DocumentTranslator):
 # ── 预留 Translator（接口占位，不实现逻辑）─────────────────
 
 class DOCXTranslator(DocumentTranslator):
-    """DOCX 翻译器（预留接口，未来实现）"""
-    def translate(self, file_path, output_path, **kwargs):
-        raise NotImplementedError("DOCX 翻译将在 Phase 4/5 实现")
+    """DOCX 翻译器 — 读 DOCX → 翻译文字+OCR图片 → 写 DOCX"""
+
+    def translate(
+        self,
+        file_path: str,
+        output_path: str,
+        translation_engine: str = None,
+        ocr_engine: str = None,
+        page_range: str = None,
+        log_callback: Callable = None,
+        progress_callback: Callable = None,
+        **kwargs,
+    ) -> DispatchResult:
+        from modules.docx_reader import DocxReader
+        from modules.ocr_engine import create_ocr_engine
+        from modules.translator import create_translation_engine
+        from modules.docx_writer import DocxWriter
+
+        def log(msg, level="info", progress=0):
+            if log_callback:
+                log_callback(msg, level, progress)
+
+        try:
+            log(f"开始处理 DOCX: {os.path.basename(file_path)}", "info", 1)
+
+            # 步骤1: 读取 DOCX
+            log("读取 DOCX 文档结构...", "info", 5)
+            reader = DocxReader(file_path)
+            content = reader.extract()
+            log(f"提取完成: {len(content.paragraphs)}段落, {len(content.headings)}标题, {len(content.tables)}表格, {len(content.images)}图片", "success", 15)
+
+            # 构建翻译列表（顺序：段落(index排序)→标题(index排序)→表格(行列)→页眉→页脚）
+            all_items = []
+            for p in sorted(content.paragraphs, key=lambda x: x.index):
+                all_items.append(p.text)
+            for h in sorted(content.headings, key=lambda x: x.index):
+                all_items.append(h.text)
+            for t in content.tables:
+                for row in range(t.rows):
+                    for col in range(t.cols):
+                        cell = t.get_cell(row, col)
+                        if cell:
+                            all_items.append(cell.text)
+            for hdr in content.headers:
+                all_items.append(hdr)
+            for ftr in content.footers:
+                all_items.append(ftr)
+
+            # 过滤空文本
+            texts_to_translate = [t for t in all_items if t.strip() and len(t.strip()) > 1]
+            log(f"待翻译文本: {len(texts_to_translate)} 条", "info", 20)
+
+            if not texts_to_translate:
+                # 没有文字可翻译，直接复制原文件
+                import shutil
+                shutil.copy(file_path, output_path)
+                log("文档无文字内容，已复制原文件", "success", 100)
+                return DispatchResult(
+                    task_id="",
+                    file_path=file_path,
+                    file_format="docx",
+                    success=True,
+                    output_path=output_path,
+                    stats={"texts_translated": 0},
+                )
+
+            # 步骤2: 初始化引擎
+            log("初始化翻译引擎...", "info", 25)
+            translator = create_translation_engine()
+            if translation_engine:
+                config.TRANSLATION_ENGINE = translation_engine
+
+            # 步骤3: 翻译文字
+            translated = []
+            total = len(texts_to_translate)
+            for i, text in enumerate(texts_to_translate):
+                try:
+                    result = translator.translate(text)
+                    translated.append(result)
+                except Exception as e:
+                    log(f"翻译失败 [{text[:30]}...]: {e}", "warning")
+                    translated.append(text)  # 回退原文
+                if i % max(1, total // 5) == 0:
+                    log(f"翻译进度: {i+1}/{total}", "info", 25 + int(50 * (i+1) / total))
+
+            log(f"翻译完成: {total} 条", "success", 75)
+
+            # 步骤4: OCR 图片（可选）
+            if content.images:
+                do_ocr = kwargs.get("docx_translate_images", True)
+                if do_ocr:
+                    log(f"OCR 识别图片: {len(content.images)} 张...", "info", 80)
+                    ocr = create_ocr_engine()
+                    if ocr_engine:
+                        config.OCR_ENGINE = ocr_engine
+                    DocxReader.ocr_images(content, ocr)
+                    ocr_total = sum(len(img.ocr_results) for img in content.images)
+                    log(f"OCR 完成: {ocr_total} 个文字区域", "success", 85)
+
+            # 步骤5: 写回 DOCX
+            log("生成翻译后 DOCX...", "info", 90)
+            writer = DocxWriter(file_path)
+
+            # 构建完整翻译结果（保持与原文相同顺序）
+            all_translated = []
+            trans_idx = 0
+            for item in all_items:
+                if item.strip() and len(item.strip()) > 1 and trans_idx < len(translated):
+                    all_translated.append(translated[trans_idx])
+                    trans_idx += 1
+                else:
+                    all_translated.append(item)  # 保留原文
+
+            writer.write_translated(content, all_translated, output_path)
+            log(f"✅ DOCX 翻译完成！输出: {output_path}", "success", 100)
+
+            return DispatchResult(
+                task_id="",
+                file_path=file_path,
+                file_format="docx",
+                success=True,
+                output_path=output_path,
+                stats={
+                    "texts_translated": total,
+                    "images_ocr": sum(1 for img in content.images if img.has_ocr),
+                    "ocr_regions": sum(len(img.ocr_results) for img in content.images),
+                },
+            )
+
+        except Exception as e:
+            log(f"❌ DOCX 翻译失败: {e}", "error")
+            import traceback
+            traceback.print_exc()
+            return DispatchResult(
+                task_id="",
+                file_path=file_path,
+                file_format="docx",
+                success=False,
+                error=str(e),
+            )
 
 
 class ImageTranslator(DocumentTranslator):

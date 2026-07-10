@@ -21,8 +21,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from sse_starlette.sse import EventSourceResponse
 
 from config import config
 from core.task_manager import (
@@ -38,9 +36,8 @@ UPLOAD_DIR = os.path.join(config.INPUT_DIR, "web_uploads")
 
 app = FastAPI(title="日文 PDF 翻译工具", version="0.2.0")
 
-# 静态文件 & 模板
+# 静态文件
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
-templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 # 确保上传目录存在
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -70,7 +67,9 @@ def detect_format(filename: str) -> str:
 @app.get("/", response_class=HTMLResponse)
 async def index():
     """主页面"""
-    return templates.TemplateResponse("index.html", {})
+    html_path = os.path.join(BASE_DIR, "templates", "index.html")
+    with open(html_path, "r", encoding="utf-8") as f:
+        return HTMLResponse(content=f.read())
 
 # ── 路由：文件上传 ──────────────────────────────────────────
 
@@ -102,15 +101,13 @@ async def upload_files(files: List[UploadFile] = File(...)):
         with open(file_path, "wb") as f:
             f.write(content)
 
-        uploaded = UploadedFile(
-            id=file_id,
-            name=file.filename,
-            path=file_path,
-            size=len(content),
-            format=fmt,
-            uploaded_at=datetime.now().isoformat(),
-        )
-        uploaded_files[file_id] = uploaded
+        uploaded_files[file_id] = {
+            "name": file.filename,
+            "path": file_path,
+            "size": len(content),
+            "format": fmt,
+            "uploaded_at": datetime.now().isoformat(),
+        }
         results.append({
             "id": file_id,
             "name": file.filename,
@@ -247,12 +244,19 @@ async def stream_logs(task_id: str):
 # ── 路由：开始翻译（通过 TaskManager）─────────────────────────
 
 @app.post("/api/translate")
-async def start_translation(file_id: str = Form(...)):
+async def start_translation(
+    file_id: str = Form(...),
+    translator: str = Form(None),
+    ocr: str = Form(None),
+    page_range: str = Form(None),
+):
     """
     开始翻译任务（异步执行，通过 SSE 返回进度）。
 
-    请求：file_id（已上传文件 ID）
-    返回：task_id（用于 SSE 日志流）
+    参数（可选，不传则使用全局 config 默认值）:
+      - translator: 翻译引擎 (deepseek/google/openai/deepl)
+      - ocr: OCR 引擎 (easyocr/tesseract)
+      - page_range: PDF 页码范围 (如 "1-5,10-20")
     """
     upload_info = uploaded_files.get(file_id)
     if not upload_info:
@@ -261,8 +265,9 @@ async def start_translation(file_id: str = Form(...)):
     task = task_manager.create_task(
         file_path=upload_info["path"],
         task_config=TaskConfig(
-            translation_engine=config.TRANSLATION_ENGINE,
-            ocr_engine=config.OCR_ENGINE,
+            translation_engine=translator or config.TRANSLATION_ENGINE,
+            ocr_engine=ocr or config.OCR_ENGINE,
+            page_range=page_range or None,
         ),
     )
 

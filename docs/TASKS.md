@@ -4,15 +4,59 @@
 
 ---
 
-## 🟢 当前执行中的任务
+## ✅ Phase 2 收尾：CLI DOCX + 进度条 — 已完成
 
-| # | 任务 | 状态 | 负责人 | 备注 |
-|---|------|------|--------|------|
-| - | 暂无进行中任务 | - | - | 等待用户确认 Phase 4 Step 1 |
+### 修改文件
+| 文件 | 变更 |
+|------|------|
+| `main.py` | 自动检测 PDF/DOCX，DOCX 翻译带 tqdm 进度条 |
+| `README.md` | CLI 同时支持 PDF 和 DOCX |
+| `docs/CHANGELOG.md` | 更新 CLI 描述 |
+| `docs/ROADMAP.md` | 标记完成 |
+| `docs/TASKS.md` | 更新状态 |
 
----
+### 已验证文件
+| 文件 | 说明 |
+|------|------|
+| `modules/docx_writer.py` | ～120行 |
+| `core/dispatcher.py` | DOCXTranslator 完整实现 |
+| `core/task_manager.py` | 修复 lambda 回调 + 输出扩展名 |
 
-## ✅ Phase 4 Step 1: DOCX Reader — 已完成
+### 测试结果
+| 测试 | 结果 |
+|------|------|
+| `テスト文書.docx`（Web UI） | ✅ 段落/标题/表格正确翻译 |
+| `異世界転生RPG_前十页_翻译测试.docx` | ✅ 前十页 37 条文字翻译 |
+
+### ⚠️ 已知限制
+- 大文件（100+页）翻译时间超过 10 分钟，Web UI 前端会超时
+- 需要增加"超时时间可配置"或"后台任务 + 轮询"模式（后续优化）
+
+### 新增文件
+| 文件 | 说明 |
+|------|------|
+| `modules/docx_writer.py` | DocxWriter — 基于模板保持样式写回 |
+
+### 修改文件
+| 文件 | 变更 |
+|------|------|
+| `core/dispatcher.py` | DOCXTranslator 完整实现（读→翻译→写） |
+| `core/task_manager.py` | DOCX 输出扩展名修正 |
+| `docs/CHANGELOG.md` | 记录变更 |
+| `docs/TASKS.md` | 更新状态 |
+| `docs/ROADMAP.md` | Phase 5 标记完成 |
+
+### 验证结果
+
+| 测试 | 结果 |
+|------|------|
+| `テスト文書.docx`（小文件） | ✅ 段落/标题/表格全部正确翻译 |
+| `異世界転生RPG_101-200.docx`（大文件） | 🔄 后台翻译中 |
+
+### 设计要点
+- Writer 与 Reader 共享索引体系
+- 文字替换保持原始样式（font/bold/italic/alignment）
+- 支持跳过图片 OCR（`docx_translate_images=False`）
 
 ### 新增文件
 | 文件 | 行数 | 说明 |

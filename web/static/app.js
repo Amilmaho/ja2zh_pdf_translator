@@ -245,10 +245,88 @@ testLogBtn.addEventListener('click', async () => {
     }
 });
 
-// ── 开始翻译（预留，暂不接入）──────────────────────────
-startBtn.addEventListener('click', () => {
-    addLog('warning', '🚧 翻译功能将在下一阶段接入');
+// ── 开始翻译 ──────────────────────────────────────────
+startBtn.addEventListener('click', async () => {
+    const validFiles = uploadedFiles.filter(f => !f.hasError);
+    if (validFiles.length === 0) {
+        addLog('warning', '⚠ 没有可翻译的文件');
+        return;
+    }
+
+    setStatus('busy', '翻译中...');
+    startBtn.disabled = true;
+
+    // 读取用户设置
+    const translatorEngine = document.getElementById('settingTranslator').value;
+    const ocrEngine = document.getElementById('settingOCR').value;
+    const pageRange = document.getElementById('settingPageRange').value.trim();
+
+    // 逐个翻译每个文件
+    for (const file of validFiles) {
+        addLog('info', `📤 开始翻译: ${file.name}`);
+        
+        const formData = new FormData();
+        formData.append('file_id', file.id);
+        if (translatorEngine) formData.append('translator', translatorEngine);
+        if (ocrEngine) formData.append('ocr', ocrEngine);
+        if (pageRange) formData.append('page_range', pageRange);
+
+        try {
+            const resp = await fetch('/api/translate', {
+                method: 'POST',
+                body: formData,
+            });
+            
+            if (!resp.ok) {
+                const err = await resp.text();
+                addLog('error', `翻译请求失败: ${err}`);
+                continue;
+            }
+            
+            const data = await resp.json();
+            addLog('info', `任务已创建: ${data.task_id}`);
+            connectSSE(data.task_id);
+
+            // 等待任务完成
+            await waitForTask(data.task_id);
+            
+            // 尝试下载
+            const taskResp = await fetch(`/api/tasks/${data.task_id}`);
+            const taskInfo = await taskResp.json();
+            if (taskInfo.status === 'success') {
+                addLog('success', `✅ ${file.name} 翻译完成`);
+                // 自动下载
+                window.open(`/api/download/${data.task_id}`, '_blank');
+            } else {
+                addLog('error', `❌ ${file.name} 翻译失败: ${taskInfo.error_message || '未知错误'}`);
+            }
+        } catch (err) {
+            addLog('error', `翻译异常: ${err.message}`);
+        }
+    }
+
+    setStatus('ok', '就绪');
+    startBtn.disabled = false;
 });
+
+// ── 等待任务完成 ──────────────────────────────────────
+async function waitForTask(taskId, timeoutSec = 600) {
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeoutSec * 1000) {
+        try {
+            const resp = await fetch(`/api/tasks/${taskId}`);
+            const info = await resp.json();
+            if (['success', 'failed', 'cancelled'].includes(info.status)) {
+                return info;
+            }
+        } catch (e) {
+            // 轮询忽略错误
+        }
+        await new Promise(r => setTimeout(r, 1000));
+    }
+    addLog('warning', '⚠ 任务超时');
+    return { status: 'timeout' };
+}
 
 // ── 安全函数 ──────────────────────────────────────────
 function escapeHtml(text) {

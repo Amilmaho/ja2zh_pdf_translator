@@ -6,6 +6,17 @@
 
 ## [Unreleased]
 
+### Added (Phase 5: DOCX Writer)
+- `modules/docx_writer.py` — DOCX 写入器
+  - 基于原始 DOCX 模板保持样式
+  - 段落/标题/表格文字替换
+  - 与 DocxReader 共享索引体系
+- `core/dispatcher.py` — `DOCXTranslator` 完整实现
+  - 读 DOCX → 翻译文字 → OCR 图片 → 写 DOCX
+  - 完全复用现有 Translation Engine 和 OCR Engine
+  - 支持跳过图片 OCR 选项
+- `core/task_manager.py` — 修复 DOCX 输出扩展名 `.docx`
+
 ### Added (Phase 4 - Step 2: DOCX 图片 OCR)
 - `modules/docx_reader.py` — 新增 `ocr_images()` 静态方法和 `get_ocr_summary()`
   - `DocxImage` 新增 `ocr_results` 字段和 `has_ocr` 属性
@@ -95,9 +106,6 @@
 - API 拒绝检测
 
 ### CLI
-- `--translator` 引擎切换
-- `--ocr` OCR 引擎切换
-- `--pages` 页码范围（1-5, 1-5/10-20, 1/3/5）
-- `--source-lang` / `--target-lang` 语言设置
-- `-o` 输出路径
-- tqdm 进度可视化
+- `main.py` 同时支持 PDF 和 DOCX，自动检测文件格式
+- DOCX 翻译带 tqdm 进度条
+- 移除冗余参数 `--source-lang` / `--target-lang`

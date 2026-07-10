@@ -159,7 +159,8 @@ class TaskManager:
         os.makedirs(output_dir, exist_ok=True)
 
         base_name = os.path.splitext(file_name)[0]
-        output_path = os.path.join(output_dir, f"{base_name}_translated.pdf")
+        output_ext = f".{file_format}" if file_format in ("docx", "png", "jpg", "pptx", "epub") else ".pdf"
+        output_path = os.path.join(output_dir, f"{base_name}_translated{output_ext}")
 
         task = Task(
             id=task_id,
@@ -207,7 +208,7 @@ class TaskManager:
 
         try:
             dispatcher = DocumentDispatcher(
-                log_callback=lambda log: self._add_log(task, log.message, log.level, log.progress),
+                log_callback=lambda msg, level="info", progress=0: self._add_log(task, msg, level, progress),
                 progress_callback=lambda p: self._update_progress(task, p),
             )
 

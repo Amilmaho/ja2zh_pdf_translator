@@ -27,21 +27,16 @@ class JapanesePDFTranslator:
         pdf_path: str,
         output_path: str = None,
         translation_engine: str = None,
-        ocr_engine: str = None,
-        page_range: str = None
+        ocr_engine: str = None
     ):
         self.pdf_path = pdf_path
         self.pdf_name = Path(pdf_path).stem
 
-        # 解析页码范围: "1-5" 或 "1,3,5" 或 "1-5,10-20"
-        self.page_range = self._parse_page_range(page_range)
-
         # 设置输出路径
         if output_path is None:
-            suffix = f"_p{self.page_range[0]}-{self.page_range[-1]}" if self.page_range else ""
             self.output_path = os.path.join(
                 config.OUTPUT_DIR,
-                f"{self.pdf_name}{suffix}_translated.pdf"
+                f"{self.pdf_name}_translated.pdf"
             )
         else:
             self.output_path = output_path
@@ -61,37 +56,6 @@ class JapanesePDFTranslator:
         self.ocr: OCREngine = None
         self.translator: TranslationEngine = None
 
-    def _parse_page_range(self, page_range: str) -> list:
-        """解析页码范围字符串
-        
-        支持格式:
-          "1-5"     → [1,2,3,4,5]
-          "1,3,5"   → [1,3,5]
-          "1-5,10-15" → [1,2,3,4,5,10,11,12,13,14,15]
-          空/None   → None (全部页)
-        """
-        if not page_range or not page_range.strip():
-            return None
-        
-        result = set()
-        for part in page_range.split(","):
-            part = part.strip()
-            if "-" in part:
-                try:
-                    start, end = map(int, part.split("-", 1))
-                    result.update(range(start, end + 1))
-                except ValueError:
-                    continue
-            else:
-                try:
-                    result.add(int(part))
-                except ValueError:
-                    continue
-        
-        if not result:
-            return None
-        return sorted(result)
-
     def run(self):
         """主流程"""
         print("=" * 60)
@@ -100,8 +64,6 @@ class JapanesePDFTranslator:
         print(f"  输出: {self.output_path}")
         print(f"  翻译引擎: {config.TRANSLATION_ENGINE}")
         print(f"  OCR引擎: {config.OCR_ENGINE}")
-        if self.page_range:
-            print(f"  页码范围: {self.page_range[0]} - {self.page_range[-1]} ({len(self.page_range)} 页)")
         print("=" * 60)
 
         # 步骤 1: 初始化引擎
@@ -134,21 +96,12 @@ class JapanesePDFTranslator:
         print("=" * 60)
 
     def _extract_content(self) -> list:
-        """提取 PDF 中的内容（支持页码范围）"""
+        """提取 PDF 中的所有内容"""
         self.extractor = PDFExtractor(
             self.pdf_path,
             temp_dir=self.temp_dir
         )
-        
-        if self.page_range:
-            # 只提取指定页面
-            pages_content = []
-            for page_num in self.page_range:
-                # page_range 是 1-based，extract_page 使用 0-based
-                page = self.extractor.extract_page(page_num - 1)
-                pages_content.append(page)
-        else:
-            pages_content = self.extractor.extract_all()
+        pages_content = self.extractor.extract_all()
 
         total_text_blocks = sum(len(p.text_blocks) for p in pages_content)
         total_images = sum(len(p.image_blocks) for p in pages_content)
@@ -334,19 +287,16 @@ def main():
   python main.py input.pdf --translator openai
   python main.py input.pdf --ocr tesseract
   python main.py input.pdf --translator google --ocr easyocr
-  python main.py input.pdf --pages 1-5           # 只翻译前5页
-  python main.py input.pdf --pages 1-5,10-20     # 翻译第1-5页和第10-20页
-  python main.py input.pdf --pages 1,3,5         # 只翻译第1/3/5页
         """
     )
 
-    parser.add_argument("pdf", help="输入的日文 PDF 文件路径")
-    parser.add_argument("-o", "--output", help="输出 PDF 文件路径", default=None)
+    parser.add_argument("pdf", help="输入的日文 PDF 或 DOCX 文件路径")
+    parser.add_argument("-o", "--output", help="输出文件路径", default=None)
     parser.add_argument(
         "--translator",
         choices=["google", "deepseek", "openai", "deepl"],
         default=None,
-        help="翻译引擎 (默认: google)"
+        help="翻译引擎 (默认: deepseek)"
     )
     parser.add_argument(
         "--ocr",
@@ -354,44 +304,99 @@ def main():
         default=None,
         help="OCR 引擎 (默认: easyocr)"
     )
-    parser.add_argument(
-        "--source-lang",
-        default="ja",
-        help="源语言代码 (默认: ja)"
-    )
-    parser.add_argument(
-        "--target-lang",
-        default="zh-CN",
-        help="目标语言代码 (默认: zh-CN)"
-    )
-    parser.add_argument(
-        "--pages",
-        default=None,
-        help="指定翻译的页码范围，如: 1-5, 1-5/10-20, 1/3/5 (默认: 全部)"
-    )
 
     args = parser.parse_args()
 
-    # 检查文件存在
     if not os.path.exists(args.pdf):
         print(f"错误: 文件不存在 - {args.pdf}")
         sys.exit(1)
 
-    # 更新配置
-    if args.source_lang:
-        config.SOURCE_LANG = args.source_lang
-    if args.target_lang:
-        config.TARGET_LANG = args.target_lang
+    ext = os.path.splitext(args.pdf)[1].lower()
 
-    # 运行翻译
+    if ext == ".docx":
+        _translate_docx(args)
+    else:
+        _translate_pdf(args)
+
+
+def _translate_pdf(args):
+    """PDF 翻译（原有逻辑）"""
     translator = JapanesePDFTranslator(
         pdf_path=args.pdf,
         output_path=args.output,
         translation_engine=args.translator,
         ocr_engine=args.ocr,
-        page_range=args.pages
     )
     translator.run()
+
+
+def _translate_docx(args):
+    """DOCX 翻译（带进度条）"""
+    from core.dispatcher import DocumentDispatcher
+    from types import SimpleNamespace
+    from tqdm import tqdm
+
+    if args.translator:
+        config.TRANSLATION_ENGINE = args.translator
+    if args.ocr:
+        config.OCR_ENGINE = args.ocr
+
+    if args.output is None:
+        base = os.path.splitext(args.pdf)[0]
+        args.output = f"{base}_translated.docx"
+
+    print("=" * 60)
+    print(f"  日文 DOCX 翻译工具")
+    print(f"  源文件: {args.pdf}")
+    print(f"  输出: {args.output}")
+    print(f"  翻译引擎: {config.TRANSLATION_ENGINE}")
+    print(f"  OCR引擎: {config.OCR_ENGINE}")
+    print("=" * 60)
+
+    # 步骤1: 读取
+    print("\n[1/3] 读取 DOCX...")
+    from modules.docx_reader import DocxReader
+    reader = DocxReader(args.pdf)
+    content = reader.extract()
+    print(f"  段落: {len(content.paragraphs)}, 标题: {len(content.headings)}")
+    print(f"  表格: {len(content.tables)}, 图片: {len(content.images)}")
+
+    # 步骤2: 翻译
+    from modules.translator import create_translation_engine
+    translator = create_translation_engine()
+
+    all_items = []
+    for p in sorted(content.paragraphs, key=lambda x: x.index):
+        all_items.append(p.text)
+    for h in sorted(content.headings, key=lambda x: x.index):
+        all_items.append(h.text)
+    for t in content.tables:
+        for row in range(t.rows):
+            for col in range(t.cols):
+                c = t.get_cell(row, col)
+                if c:
+                    all_items.append(c.text)
+
+    to_translate = [(i, t) for i, t in enumerate(all_items) if len(t.strip()) > 1]
+    print(f"\n[2/3] 翻译文字: {len(to_translate)} 条...")
+
+    translated_list = [''] * len(all_items)
+    for i, text in tqdm(to_translate, desc="  翻译中"):
+        try:
+            translated_list[i] = translator.translate(text)
+        except Exception:
+            translated_list[i] = text
+
+    # 步骤3: 写回
+    print(f"\n[3/3] 生成翻译后 DOCX...")
+    from modules.docx_writer import DocxWriter
+    writer = DocxWriter(args.pdf)
+    writer.write_translated(content, translated_list, args.output)
+
+    print(f"\n{'=' * 60}")
+    print(f"  ✅ 翻译完成！")
+    print(f"  输出文件: {args.output}")
+    print(f"{'=' * 60}")
 
 
 if __name__ == "__main__":
