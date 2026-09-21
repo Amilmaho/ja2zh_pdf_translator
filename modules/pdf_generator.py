@@ -1,461 +1,583 @@
 """
-PDF 生成模块
-将翻译后的文字和图片重新组合成新的 PDF 文件
+PDF 生成模块（重构版）
 
-支持两种模式:
-  1. 文字型 PDF: 替换原文为翻译文字
-  2. 图片型 PDF: OCR 翻译文字叠加到图片上（白色背景框 + 中文）
+核心思路：**在原 PDF 的副本上原地改写**，而不是从零新建空白页。
+  1. 打开源 PDF 副本 → 原图、矢量、版式 100% 保留
+  2. 文字型页面：用 redaction 精确删除原文 → 再写入译文
+  3. 图片型页面：按区域底色覆盖 → 再写入译文
+  4. 写之前先用 TextFitter 算清楚「放不放得下」，放不下就不覆盖
+
+这直接修掉了旧版「翻译后的图片大部分都是空白」的问题：
+旧版先画白底再用 insert_textbox 试写，写不进去就留下白块；
+新版先排版后绘制，永远不会出现「有白块没文字」的情况。
 """
 
 import os
 import sys
-from typing import List, Dict, Any
-from PIL import Image
-import io
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import fitz  # PyMuPDF
+import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import config
-from modules.pdf_extractor import PageContent, TextBlock, ImageBlock
+from modules.fonts import get_font, get_font_path
+from modules.text_layout import TextFitter
+from modules.utils import ProgressReporter
 
+
+FONT_NAME = "cjk"
+
+
+class _PageDrawer:
+    """
+    一页的绘制缓冲。
+
+    用 fitz.TextWriter 而不是 page.insert_text：
+      - insert_text 每次都要重新解析字体文件，速度慢且在部分字体上会报
+        "need font file or buffer"
+      - TextWriter 直接使用已加载的 fitz.Font 对象，并支持按颜色分批写入
+    """
+
+    def __init__(self, page: fitz.Page, font: fitz.Font):
+        self.page = page
+        self.font = font
+        self._writers: Dict[tuple, fitz.TextWriter] = {}
+
+    def write_line(self, point, text: str, font_size: float, color):
+        key = (round(color[0], 3), round(color[1], 3), round(color[2], 3))
+        writer = self._writers.get(key)
+        if writer is None:
+            writer = fitz.TextWriter(self.page.rect)
+            self._writers[key] = writer
+        writer.append(point, text, font=self.font, fontsize=font_size)
+
+    def flush(self):
+        for color, writer in self._writers.items():
+            if writer.text_rect is None:
+                continue
+            writer.write_text(self.page, color=color, overlay=True)
+        self._writers.clear()
+
+
+# ── 输入计划的数据结构 ────────────────────────────────────
+
+@dataclass
+class TextItem:
+    """文字型页面里的一行：原文 + 译文"""
+    rect: fitz.Rect
+    translated: str
+    original: str = ""
+    font_size: float = 10.0
+
+
+@dataclass
+class OverlayItem:
+    """图片型页面里的一个 OCR 区域：图片像素坐标 + 译文"""
+    image_bbox: Tuple[float, float, float, float]
+    translated: str
+    original: str = ""
+    confidence: float = 1.0
+    image_size: Tuple[int, int] = (0, 0)
+    image_rect: Tuple[float, float, float, float] = (0, 0, 0, 0)
+    # 目标字号：按原文字形的实际大小标定（0 表示按框高估算）
+    target_size: float = 0.0
+
+
+@dataclass
+class PagePlan:
+    """一页的改写计划"""
+    page_num: int
+    text_items: List[TextItem] = field(default_factory=list)
+    overlay_items: List[OverlayItem] = field(default_factory=list)
+    page_width: float = 0.0
+    page_height: float = 0.0
+    # 用页面自带的隐藏 OCR 文字层做识别时置 True：
+    # 绘制前先把整页文字层删掉（保留图片），避免译文底下压着一层日文
+    redact_text_layer: bool = False
+    # 目标字号 = 区域高度 × 该系数。
+    # OCR 的框是紧贴字形的「墨迹框」(0.85)；
+    # PDF 文字层的框是字体度量框（更高），所以系数要小一些。
+    box_height_factor: float = 0.85
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.text_items and not self.overlay_items
+
+
+@dataclass
+class PageResult:
+    """一页的渲染结果（用于汇总/自检）"""
+    page_num: int
+    mode: str = "skip"
+    drawn: int = 0
+    kept_original: int = 0
+    failed: int = 0
+
+
+@dataclass
+class GenerateStats:
+    pages_total: int = 0
+    pages_text: int = 0
+    pages_overlay: int = 0
+    items_drawn: int = 0
+    items_kept_original: int = 0
+    items_failed: int = 0
+    page_results: List[PageResult] = field(default_factory=list)
+
+    @property
+    def needs_review(self) -> bool:
+        """是否存在需要人工确认的页面（有区域放不下译文）"""
+        return self.items_failed > 0
+
+    def summary(self) -> str:
+        return (
+            f"共 {self.pages_total} 页"
+            f"（文字页 {self.pages_text} / 图片页 {self.pages_overlay}），"
+            f"写入译文 {self.items_drawn} 处，"
+            f"保留原文 {self.items_kept_original} 处，"
+            f"放不下 {self.items_failed} 处"
+        )
+
+
+# ── 生成器 ────────────────────────────────────────────────
 
 class PDFGenerator:
-    """PDF 生成器 - 将翻译后的内容写入新 PDF"""
+    """在原 PDF 副本上写入译文"""
 
-    def __init__(self, output_path: str, font_path: str = None):
+    def __init__(
+        self,
+        output_path: str,
+        font_path: str = None,
+        source_pdf: str = None,
+        fill_mode: str = None,
+        text_color: str = None,
+        min_font: float = None,
+        max_font: float = None,
+        expand: bool = None,
+        sample_dpi: int = 150,
+        verbose: bool = True,
+    ):
         self.output_path = output_path
-        self.font_path = font_path or self._find_chinese_font()
-        print(f"[PDF生成] 使用字体: {self.font_path}")
+        self.source_pdf = source_pdf
+        self.fill_mode = fill_mode or config.OVERLAY_FILL_MODE
+        self.text_color_mode = text_color or config.OVERLAY_TEXT_COLOR
+        self.min_font = min_font if min_font is not None else config.OVERLAY_MIN_FONT
+        self.max_font = max_font if max_font is not None else config.OVERLAY_MAX_FONT
+        self.expand = config.OVERLAY_EXPAND if expand is None else expand
+        self.sample_dpi = sample_dpi
+        self.verbose = verbose
 
-    def _find_chinese_font(self) -> str:
-        """自动查找可用的中文字体 (支持 Windows / macOS / Linux)"""
-        # 优先使用环境变量指定的字体
-        if config.FONT_PATH and os.path.exists(config.FONT_PATH):
-            return config.FONT_PATH
+        self.font_path = font_path or get_font_path()
+        self.font = get_font()
+        # 行距取得比默认更紧凑：OCR 文本框通常只比字形高一点点，
+        # 行距太大会让两行译文放不进去。
+        self.fitter = TextFitter(self.font, line_height_ratio=1.12)
+        self._pixmap_cache: Dict[int, np.ndarray] = {}
 
-        candidates = [
-            # macOS 常见中文字体
-            "/System/Library/Fonts/STHeiti Light.ttc",
-            "/System/Library/Fonts/STHeiti Medium.ttc",
-            "/System/Library/Fonts/Songti.ttc",
-            "/System/Library/Fonts/PingFang.ttc",
-            "/System/Library/Fonts/Hiragino Sans GB.ttc",
-            "/Library/Fonts/Arial Unicode.ttf",
-            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-            # Windows 中文字体
-            "C:/Windows/Fonts/simsun.ttc",
-            "C:/Windows/Fonts/msyh.ttc",
-            "C:/Windows/Fonts/msyhbd.ttc",
-            "C:/Windows/Fonts/simhei.ttf",
-            "C:/Windows/Fonts/mingliu.ttc",
-            # Linux 中文字体
-            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
-            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-        ]
-        for f in candidates:
-            if os.path.exists(f):
-                return f
-        raise FileNotFoundError(
-            "未找到中文字体！\n"
-            "macOS 用户请确认 /System/Library/Fonts/ 下有 STHeiti 或 Songti\n"
-            "或设置环境变量 FONT_PATH 指向中文字体路径"
-        )
+        if self.verbose:
+            print(f"[PDF生成] 字体: {os.path.basename(self.font_path)}", flush=True)
 
-    def generate(
+    # ── 主入口 ───────────────────────────────────────────
+
+    def apply(
         self,
-        pages_content: List[PageContent],
-        translated_texts: List[List[str]],
-        ocr_results_per_page: List[list] = None
-    ):
-        """生成翻译后的 PDF — 自动检测文字型/图片型并选择合适的模式"""
-        from tqdm import tqdm
-
-        total_text_blocks = sum(len(t) for t in translated_texts)
-        total_ocr = sum(len(r) for r in (ocr_results_per_page or []))
-
-        is_image_based = total_text_blocks == 0 and total_ocr > 0
-        mode = "图片叠加模式" if is_image_based else "文字替换模式"
-
-        print(f"[PDF生成] {mode}")
-        print(f"[PDF生成] 共 {len(pages_content)} 页")
-
-        doc = fitz.open()
-
-        for page_idx, page_content in enumerate(
-            tqdm(pages_content, desc="  生成PDF页面")
-        ):
-            page = doc.new_page(
-                width=page_content.width,
-                height=page_content.height
-            )
-
-            if is_image_based:
-                # 图片型 PDF: 嵌入图片 + 叠加翻译文字
-                self._build_image_page(
-                    page, page_content,
-                    ocr_results_per_page[page_idx] if ocr_results_per_page else []
-                )
-            else:
-                # 文字型 PDF: 替换文字 + 嵌入图片
-                self._write_translated_text(
-                    page, page_content, translated_texts[page_idx]
-                )
-                self._embed_images(page, page_content)
-
-        print(f"[PDF生成] 正在保存 PDF...")
-        doc.save(self.output_path, garbage=4, deflate=True)
-        doc.close()
-        print(f"[PDF生成] PDF 已保存到: {self.output_path}")
-
-    # ========== 图片型 PDF 生成 ==========
-
-    def _build_image_page(
-        self,
-        page: fitz.Page,
-        page_content: PageContent,
-        page_ocr_results: list
-    ):
-        """构建图片型页面: 嵌入原始图片 + 叠加翻译文字框"""
-        if not page_content.image_blocks:
-            return
-
-        img_block = page_content.image_blocks[0]
-        img_path = img_block.image_path
-        if not img_path or not os.path.exists(img_path):
-            return
-
-        # 获取图片原始尺寸
-        pil_img = Image.open(img_path)
-        img_w, img_h = pil_img.size
-        pil_img.close()
-
-        # 将图片缩放到页面大小
-        page_w = page.rect.width
-        page_h = page.rect.height
-        scale = min(page_w / img_w, page_h / img_h)
-        scaled_w = img_w * scale
-        scaled_h = img_h * scale
-        offset_x = (page_w - scaled_w) / 2
-        offset_y = (page_h - scaled_h) / 2
-
-        # 嵌入原始图片（居中缩放）
-        page.insert_image(
-            fitz.Rect(offset_x, offset_y, offset_x + scaled_w, offset_y + scaled_h),
-            filename=img_path
-        )
-
-        # 叠加翻译文字
-        if page_ocr_results:
-            for img_result in page_ocr_results:
-                for trans in img_result.get("translations", []):
-                    self._overlay_translated_text(
-                        page, trans, offset_x, offset_y, scale,
-                        page_w, page_h
-                    )
-
-    def _overlay_translated_text(
-        self, page: fitz.Page, trans: dict,
-        offset_x: float, offset_y: float, scale: float,
-        page_w: float, page_h: float
-    ):
-        """在图片上叠加翻译文字（白色背景 + 中文）
-
-        核心改进：
-        1. 先尝试验证文字能否渲染，再决定是否画白色背景
-        2. 渲染失败时降级显示原文，避免空白的白色矩形
-        3. 字号最小8，最大14，确保可读
-        4. 不吞异常，记录详细错误信息
+        plans: Sequence[PagePlan],
+        progress=None,
+    ) -> GenerateStats:
         """
-        translated = trans.get("translated", "")
-        original = trans.get("original", "")
+        在源 PDF 副本上执行改写计划并保存。
 
-        # 如果翻译为空，退回原文
-        if not translated.strip():
-            if original.strip():
-                translated = original  # 显示原文
-            else:
-                return  # 都没有，跳过
+        Args:
+            plans: 每页的改写计划（只包含需要改写的页）
+            progress: 可选回调 fn(done, total, desc)
+        """
+        if not self.source_pdf:
+            raise ValueError("PDFGenerator 需要 source_pdf（在原文件副本上改写）")
 
-        # OCR 坐标 (图片内坐标) → PDF 页面坐标
-        bx0, by0, bx1, by1 = trans["bbox"]
-        x0 = offset_x + bx0 * scale
-        y0 = offset_y + by0 * scale
-        x1 = offset_x + bx1 * scale
-        y1 = offset_y + by1 * scale
+        doc = fitz.open(self.source_pdf)
+        stats = GenerateStats(pages_total=len(doc))
+        reporter = ProgressReporter(verbose=self.verbose)
 
-        # 确保在页面范围内
-        x0 = max(1, min(x0, page_w - 2))
-        y0 = max(1, min(y0, page_h - 2))
-        x1 = max(x0 + 10, min(x1, page_w - 2))
-        y1 = max(y0 + 6, min(y1, page_h - 2))
+        for i, plan in enumerate(plans):
+            page = doc[plan.page_num]
+            result = self._apply_page(doc, page, plan)
+            stats.page_results.append(result)
+            stats.items_drawn += result.drawn
+            stats.items_kept_original += result.kept_original
+            stats.items_failed += result.failed
+            if result.mode == "text":
+                stats.pages_text += 1
+            elif result.mode == "overlay":
+                stats.pages_overlay += 1
 
-        # 计算合适字号（基于原文区域高度，增大范围）
-        orig_h = y1 - y0
-        orig_w = x1 - x0
+            if progress and (i % 5 == 0 or i == len(plans) - 1):
+                try:
+                    progress(i + 1, len(plans), "生成 PDF")
+                except TypeError:
+                    pass
+            if self.verbose and (i % 20 == 0 or i == len(plans) - 1):
+                reporter.log(f"已处理 {i + 1}/{len(plans)} 页", "info")
 
-        # 先估算翻译后文本需要的宽度和字号
-        text_len = len(translated)
-        if text_len <= 2:
-            font_size = min(orig_h * 0.85, 14)
-        elif text_len <= 5:
-            font_size = min(orig_h * 0.75, 12)
-        else:
-            font_size = min(orig_h * 0.65, 11)
-        font_size = max(8, font_size)  # 最小8号，确保可读
+        os.makedirs(os.path.dirname(self.output_path) or ".", exist_ok=True)
+        doc.save(self.output_path, garbage=3, deflate=True)
+        doc.close()
 
-        # 估算需要的宽度 (中文约 0.65 * font_size 每字)
-        est_width = text_len * font_size * 0.65
-        if est_width > orig_w:
-            # 文本太宽，扩展区域宽度
-            x1 = min(x0 + est_width + 10, page_w - 2)
-            # 如果宽度扩展了，重新计算可用宽度，可能需要换行
-            if x1 - x0 > orig_w * 3:
-                # 文本很长，使用多行
-                lines_needed = max(1, int(est_width / (x1 - x0)) + 1)
-                y1 = min(y0 + orig_h * max(2, lines_needed), page_h - 2)
+        if self.verbose:
+            size_mb = os.path.getsize(self.output_path) / 1024 / 1024
+            print(f"[PDF生成] 已保存: {self.output_path} ({size_mb:.1f} MB)", flush=True)
+        return stats
 
-        # 最终 rect
-        rect = fitz.Rect(x0, y0, x1, y1)
+    # ── 单页处理 ─────────────────────────────────────────
 
-        # === 分两步渲染，避免产生空白的白色矩形 ===
+    def _apply_page(self, doc: fitz.Document, page: fitz.Page, plan: PagePlan) -> PageResult:
+        result = PageResult(page_num=plan.page_num)
+        if plan.is_empty:
+            return result
 
-        # 步骤 1: 尝试渲染文字（先画到一个临时位置，验证是否成功）
-        # 这里我们直接渲染，但记录是否成功
-        text_rendered = False
-        render_error = None
+        drawer = _PageDrawer(page, self.font)
 
-        try:
-            # 先画白色背景遮盖原文
-            page.draw_rect(rect, color=None, fill=(1, 1, 1), width=0)
-
-            # 再写翻译文字
-            rc = page.insert_textbox(
-                rect,
-                translated,
-                fontname="china-s",
-                fontfile=self.font_path,
-                fontsize=font_size,
-                color=(0, 0, 0),
-                align=0,
-            )
-
-            if rc < 0:
-                # 文本溢出未渲染任何内容 → 尝试更小的字号
-                smaller_font = max(6, font_size * 0.75)
-                rc2 = page.insert_textbox(
-                    rect,
-                    translated,
-                    fontname="china-s",
-                    fontfile=self.font_path,
-                    fontsize=smaller_font,
-                    color=(0, 0, 0),
-                    align=0,
-                )
-                if rc2 >= 0:
-                    text_rendered = True
-                elif rc2 < 0:
-                    # 即使缩小字号也溢出 → 尝试只显示前几个字
-                    short_text = translated[:max(3, int(orig_w / (smaller_font * 0.65)))] + "..."
-                    rc3 = page.insert_textbox(
-                        rect, short_text,
-                        fontname="china-s",
-                        fontfile=self.font_path,
-                        fontsize=smaller_font,
-                        color=(0, 0, 0),
-                        align=0,
-                    )
-                    text_rendered = rc3 >= 0
-            else:
-                text_rendered = True
-
-        except Exception as e:
-            render_error = e
-            text_rendered = False
-
-        # 步骤 2: 如果文字渲染失败，用原文回退，避免空白白条
-        if not text_rendered and original.strip():
-            fallback_text = original[:30]
+        # 扫描件若自带隐藏文字层，先把这层删掉（图片/矢量保留），
+        # 否则输出里会残留一层看不见的日文（复制粘贴时会跑出来）
+        if plan.redact_text_layer and not plan.text_items:
             try:
-                # 缩小字号用原文填充，至少用户能看到内容
-                page.insert_textbox(
-                    rect,
-                    fallback_text,
-                    fontname="china-s",
-                    fontfile=self.font_path,
-                    fontsize=7,
-                    color=(128, 128, 128),  # 灰色表示原文
-                    align=0,
+                page.add_redact_annot(page.rect, fill=False)
+                page.apply_redactions(
+                    images=fitz.PDF_REDACT_IMAGE_NONE,
+                    graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+                    text=fitz.PDF_REDACT_TEXT_REMOVE,
                 )
             except Exception:
-                pass  # 最终回退也失败，但至少白框仍在（遮盖了原文）
+                pass
 
-    # ========== 文字型 PDF 生成 ==========
+        drawn = kept = failed = 0
+        if plan.text_items:
+            result.mode = "text"
+            d, k, f = self._apply_text_items(page, plan, drawer)
+            drawn, kept, failed = drawn + d, kept + k, failed + f
+        if plan.overlay_items:
+            if not plan.text_items:
+                result.mode = "overlay"
+            d, k, f = self._apply_overlay_items(page, plan, drawer)
+            drawn, kept, failed = drawn + d, kept + k, failed + f
 
-    def _write_translated_text(
+        drawer.flush()
+
+        result.drawn, result.kept_original, result.failed = drawn, kept, failed
+        return result
+
+    # ── 文字型页面：redaction + 写入 ──────────────────────
+
+    def _apply_text_items(
+        self, page: fitz.Page, plan: PagePlan, drawer: _PageDrawer
+    ) -> Tuple[int, int, int]:
+        drawn = kept = failed = 0
+        layouts = []
+
+        # 1) 先排版，决定哪些能写
+        for item in plan.text_items:
+            text = (item.translated or "").strip()
+            if not text:
+                kept += 1
+                continue
+            layout, rect = self._layout_for(
+                text, item.rect, item.font_size,
+                page.rect, max_size=self.max_font,
+            )
+            if layout is None:
+                failed += 1
+                continue
+            layouts.append((layout, rect))
+            # 2) 删掉这一行的原文（不填充颜色，保留背景图案）
+            page.add_redact_annot(item.rect)
+
+        if not layouts:
+            return drawn, kept, failed
+
+        try:
+            page.apply_redactions(
+                images=fitz.PDF_REDACT_IMAGE_NONE,
+                graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+                text=fitz.PDF_REDACT_TEXT_REMOVE,
+            )
+        except TypeError:
+            page.apply_redactions()
+
+        # 3) 写入译文
+        for layout, rect in layouts:
+            self._draw_lines(drawer, layout, rect, color=(0, 0, 0))
+            drawn += 1
+        return drawn, kept, failed
+
+    # ── 图片型页面：取底色覆盖 + 写入 ─────────────────────
+
+    def _apply_overlay_items(
+        self, page: fitz.Page, plan: PagePlan, drawer: _PageDrawer
+    ) -> Tuple[int, int, int]:
+        drawn = kept = failed = 0
+        pending: List[Tuple[object, fitz.Rect, tuple, tuple]] = []
+
+        # 先把本页所有待绘制的原始区域算出来，用于判断「扩展框会不会压到邻居」
+        others: List[fitz.Rect] = []
+        resolved: List[Tuple[OverlayItem, Optional[fitz.Rect]]] = []
+        for item in plan.overlay_items:
+            rect = self._image_bbox_to_page_rect(item, plan)
+            resolved.append((item, rect))
+            if rect is not None and (item.translated or "").strip():
+                others.append(rect)
+
+        for item, rect in resolved:
+            text = (item.translated or "").strip()
+            if not text:
+                kept += 1
+                continue
+
+            if rect is None or rect.is_empty:
+                failed += 1
+                continue
+
+            # 底色必须取自「原文所在的这块区域」，否则深色表格栏会被填成白块
+            base_fill = self._fill_color(page, rect)
+            layout, used_rect, fill = self._layout_with_background(
+                page, text, rect, page.rect, base_fill, others,
+                height_factor=plan.box_height_factor,
+                target_size=item.target_size,
+            )
+            if layout is None:
+                # 放不下 → 保持原图不动，绝不画空白色块
+                failed += 1
+                continue
+
+            text_color = self._text_color(fill)
+            pending.append((layout, used_rect, fill, text_color))
+            drawn += 1
+
+        # 两阶段绘制：先把所有底色铺完，再统一写文字。
+        # 否则相邻区域（大标题 + 副标题这类交叠的框）后画的底色
+        # 会把先画好的译文文字盖掉一截。
+        for _, used_rect, fill, _ in pending:
+            page.draw_rect(used_rect, color=None, fill=fill, width=0, overlay=True)
+        for layout, used_rect, _, text_color in pending:
+            self._draw_lines(drawer, layout, used_rect, color=text_color)
+        return drawn, kept, failed
+
+    def _layout_with_background(
         self,
         page: fitz.Page,
-        page_content: PageContent,
-        translated: List[str]
+        text: str,
+        rect: fitz.Rect,
+        page_rect: fitz.Rect,
+        base_fill,
+        others: Optional[List[fitz.Rect]] = None,
+        height_factor: float = 0.85,
+        target_size: float = 0.0,
     ):
-        """在页面上写入翻译后的文字"""
-        for i, block in enumerate(page_content.text_blocks):
-            if i >= len(translated):
-                break
+        """
+        在候选框中排版，但只接受「底色与原文区域一致」的扩展框。
 
-            translated_text = translated[i]
-            if not translated_text.strip():
-                continue
+        这样既能让小格子里的译文放大空间，又不会把深色栏位涂成白色。
 
-            x0, y0, x1, y1 = block.bbox
-            font_size = block.font_size
-
-            # 计算合适的字体大小（中文通常需要稍大一些）
-            adjusted_size = min(font_size * 1.1, 14)
-
-            # 确保区域在页面内
-            page_rect = page.rect
-            x0 = max(0, x0)
-            y0 = max(0, y0)
-            x1 = min(page_rect.width, x1)
-            y1 = min(page_rect.height, y1 + 20)
-
-            if x1 <= x0 or y1 <= y0:
-                continue
-
-            # 写入文本
-            rc = page.insert_textbox(
-                fitz.Rect(x0, y0, x1, y1),
-                translated_text,
-                fontname="china-s",
-                fontfile=self.font_path,
-                fontsize=adjusted_size,
-                color=(0, 0, 0),
-                align=0  # 左对齐
-            )
-
-            # 如果文字溢出，尝试更小的字号
-            if rc < 0:
-                page.insert_textbox(
-                    fitz.Rect(x0, y0, x1, y1 + 30),
-                    translated_text,
-                    fontname="china-s",
-                    fontfile=self.font_path,
-                    fontsize=adjusted_size * 0.85,
-                    color=(0, 0, 0),
-                    align=0
-                )
-
-    def _embed_images(self, page: fitz.Page, page_content: PageContent) -> tuple:
-        """将图片嵌入到页面中，返回 (成功数, 失败数)"""
-        ok, fail = 0, 0
-        page_rect = page.rect
-
-        for img_block in page_content.image_blocks:
-            if not img_block.image_path or not os.path.exists(img_block.image_path):
-                fail += 1
-                continue
-
-            try:
-                x0, y0, x1, y1 = img_block.bbox
-
-                # 计算在页面内的可用区域
-                img_rect = fitz.Rect(
-                    max(0, x0),
-                    max(0, y0),
-                    min(page_rect.width, x1),
-                    min(page_rect.height, y1)
-                )
-
-                if img_rect.width <= 1 or img_rect.height <= 1:
-                    fail += 1
+        Returns: (layout, 使用的矩形, 使用的底色) 或 (None, None, None)
+        """
+        candidates = [(rect, base_fill, 0.0)]
+        if self.expand:
+            for cand in self._expanded_candidates(rect, page_rect):
+                # 不能压到同一页其他 OCR 区域（否则会盖掉邻居的文字）
+                if others and self._overlaps_any(cand, rect, others):
                     continue
+                cand_fill = self._fill_color(page, cand)
+                if not self._color_close(cand_fill, base_fill):
+                    continue
+                candidates.append((cand, cand_fill, 0.0))
 
-                page.insert_image(img_rect, filename=img_block.image_path)
-                ok += 1
-            except Exception as e:
-                fail += 1
+        # 字号上限：
+        #   1) 优先用「原文实际字形大小」标定出来的目标字号（视觉最接近原文）
+        #   2) 没有标定值时退化为按框高估算
+        if target_size and target_size > 0:
+            upper = min(self.max_font, max(self.min_font, target_size))
+        else:
+            upper = min(self.max_font, max(self.min_font, rect.height * height_factor))
+        # 内边距按比例取，小格子不能被固定的 padding 吃掉太多宽度
+        pad = min(0.6, rect.width * 0.03, rect.height * 0.10)
+        for cand, fill, _ in candidates:
+            layout = self.fitter.fit(
+                text,
+                max(1.0, cand.width - pad * 2),
+                max(1.0, cand.height - pad * 2),
+                max_size=upper,
+                min_size=self.min_font,
+            )
+            if layout is not None:
+                return layout, cand, fill
+        return None, None, None
 
-        return ok, fail
+    @staticmethod
+    def _overlaps_any(cand: fitz.Rect, self_rect: fitz.Rect, others: List[fitz.Rect]) -> bool:
+        """候选框是否与「其他区域」相交（自己的原框不算）"""
+        probe = fitz.Rect(cand.x0 + 0.3, cand.y0 + 0.3, cand.x1 - 0.3, cand.y1 - 0.3)
+        for other in others:
+            if other == self_rect or other.intersects(self_rect):
+                continue
+            if probe.intersects(other):
+                return True
+        return False
 
+    @staticmethod
+    def _color_close(a, b, tolerance: float = 0.16) -> bool:
+        """两个颜色是否足够接近（防止扩展框跨到别的色块）"""
+        return max(abs(a[0] - b[0]), abs(a[1] - b[1]), abs(a[2] - b[2])) <= tolerance
 
-class SimplePDFGenerator:
-    """
-    简化版 PDF 生成器
-    使用 reportlab 重新排版，适合文字密集的文档
-    """
+    def _image_bbox_to_page_rect(self, item: OverlayItem, plan: PagePlan) -> Optional[fitz.Rect]:
+        """把 OCR 的图片像素坐标映射成页面坐标"""
+        ix0, iy0, ix1, iy1 = item.image_rect
+        img_w, img_h = item.image_size
+        if img_w <= 0 or img_h <= 0 or (ix1 - ix0) <= 0 or (iy1 - iy0) <= 0:
+            return None
 
-    def __init__(self, output_path: str):
-        self.output_path = output_path
+        sx = (ix1 - ix0) / img_w
+        sy = (iy1 - iy0) / img_h
+        bx0, by0, bx1, by1 = item.image_bbox
 
-    def generate_simple(
+        x0 = ix0 + bx0 * sx
+        y0 = iy0 + by0 * sy
+        x1 = ix0 + bx1 * sx
+        y1 = iy0 + by1 * sy
+
+        # 略微软化边界，避免切掉字形上下沿
+        pad_y = min(1.5, (y1 - y0) * 0.12)
+        y0 -= pad_y
+        y1 += pad_y
+
+        page_w = plan.page_width or 0
+        page_h = plan.page_height or 0
+        rect = fitz.Rect(
+            max(0.5, x0), max(0.5, y0),
+            min(page_w - 0.5, x1) if page_w else x1,
+            min(page_h - 0.5, y1) if page_h else y1,
+        )
+        if rect.width <= 1 or rect.height <= 1:
+            return None
+        return rect
+
+    # ── 排版 ─────────────────────────────────────────────
+
+    def _layout_for(
         self,
-        pages_content: List[PageContent],
-        translated_texts: List[List[str]],
-        ocr_translations: List[List[str]] = None
+        text: str,
+        rect: fitz.Rect,
+        original_font_size: float,
+        page_rect: fitz.Rect,
+        max_size: float = 16.0,
     ):
-        """简化生成：一页原文 + 一页翻译"""
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib.units import mm
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
-        from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.ttfonts import TTFont
+        """
+        在 rect（必要时扩展到候选矩形）里排版 text。
 
-        # 注册中文字体
-        font_path = self._find_chinese_font()
-        pdfmetrics.registerFont(TTFont('ChineseFont', font_path))
+        Returns: (TextLayout, 实际使用的矩形) 或 (None, None)
+        """
+        candidates = [rect]
+        if self.expand:
+            candidates.extend(self._expanded_candidates(rect, page_rect))
 
-        doc = SimpleDocTemplate(
-            self.output_path,
-            pagesize=A4,
-            leftMargin=20 * mm,
-            rightMargin=20 * mm,
-            topMargin=15 * mm,
-            bottomMargin=15 * mm
-        )
+        upper = min(max_size, max(self.min_font, original_font_size * 1.15))
+        for cand in candidates:
+            pad = 0.6
+            layout = self.fitter.fit(
+                text,
+                max(1.0, cand.width - pad * 2),
+                max(1.0, cand.height - pad * 2),
+                max_size=upper,
+                min_size=self.min_font,
+            )
+            if layout is not None:
+                return layout, cand
+        return None, None
 
-        style = ParagraphStyle(
-            'ChineseStyle',
-            fontName='ChineseFont',
-            fontSize=11,
-            leading=18,
-            spaceAfter=8,
-        )
+    def _expanded_candidates(self, rect: fitz.Rect, page_rect: fitz.Rect) -> List[fitz.Rect]:
+        """生成若干个「向空白处扩展」的候选框（尺寸递增，尽量贴近原文位置）"""
+        h = rect.height
+        w = rect.width
+        out = []
+        # 只允许「轻微」扩展：密集版面里扩太多会盖到相邻行
+        for grow_w, grow_h in ((0.10, 0.15), (0.20, 0.30)):
+            nw = w * (1 + grow_w)
+            nh = h * (1 + grow_h)
+            x1 = min(page_rect.width - 1, rect.x0 + nw)
+            y1 = min(page_rect.height - 1, rect.y0 + nh)
+            cand = fitz.Rect(rect.x0, rect.y0, x1, y1)
+            if cand.width > rect.width + 0.5 or cand.height > rect.height + 0.5:
+                out.append(cand)
+        return out
 
-        story = []
+    # ── 绘制 ─────────────────────────────────────────────
 
-        for page_idx, page_content in enumerate(pages_content):
-            # 原文
-            story.append(Paragraph(f"<b>--- 第 {page_idx + 1} 页 原文 ---</b>", style))
-            for block in page_content.text_blocks:
-                if block.text.strip():
-                    story.append(Paragraph(block.text, style))
+    def _draw_lines(self, drawer: _PageDrawer, layout, rect: fitz.Rect, color):
+        # 与排版阶段保持一致的内边距
+        pad = min(0.6, rect.width * 0.03, rect.height * 0.10)
+        baseline = rect.y0 + pad + layout.font_size * 0.86
+        for line in layout.lines:
+            if line.strip():
+                drawer.write_line(
+                    (rect.x0 + pad, baseline), line, layout.font_size, color
+                )
+            baseline += layout.line_height
 
-            story.append(Spacer(1, 10 * mm))
-            story.append(Paragraph(f"<b>--- 第 {page_idx + 1} 页 中文翻译 ---</b>", style))
+    # ── 底色 / 文字颜色 ───────────────────────────────────
 
-            # 翻译
-            if page_idx < len(translated_texts):
-                for text in translated_texts[page_idx]:
-                    if text.strip():
-                        story.append(Paragraph(text, style))
+    def _page_pixmap_array(self, page: fitz.Page) -> Optional[np.ndarray]:
+        key = page.number
+        if key in self._pixmap_cache:
+            return self._pixmap_cache[key]
+        try:
+            pix = page.get_pixmap(dpi=self.sample_dpi, alpha=False)
+            arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+                pix.height, pix.width, pix.n
+            )[:, :, :3]
+        except Exception:
+            arr = None
+        self._pixmap_cache[key] = arr
+        return arr
 
-            story.append(PageBreak())
+    def _fill_color(self, page: fitz.Page, rect: fitz.Rect, pad: float = None):
+        """取区域底色：默认用原图在该区域的主色，保证深色页面也是深色底"""
+        if self.fill_mode == "white":
+            return (1, 1, 1)
 
-        doc.build(story)
-        print(f"[PDF生成] 简化版 PDF 已保存到: {self.output_path}")
+        arr = self._page_pixmap_array(page)
+        if arr is None:
+            return (1, 1, 1)
 
-    def _find_chinese_font(self) -> str:
-        candidates = [
-            "C:/Windows/Fonts/simsun.ttc",
-            "C:/Windows/Fonts/msyh.ttc",
-            "C:/Windows/Fonts/simhei.ttf",
-            "/System/Library/Fonts/PingFang.ttc",
-            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
-        ]
-        for f in candidates:
-            if os.path.exists(f):
-                return f
-        raise FileNotFoundError("未找到中文字体")
+        scale = self.sample_dpi / 72.0
+        # 取样范围要贴着原文区域：扩太大会把旁边的白底也统计进来，
+        # 深色表格栏里的单元格就会被误判成白底。
+        if pad is None:
+            pad = min(2.0, max(0.5, rect.height * 0.3))
+        x0 = max(0, int((rect.x0 - pad) * scale))
+        y0 = max(0, int((rect.y0 - pad) * scale))
+        x1 = min(arr.shape[1], int((rect.x1 + pad) * scale))
+        y1 = min(arr.shape[0], int((rect.y1 + pad) * scale))
+        if x1 - x0 < 1 or y1 - y0 < 1:
+            # 区域像素太少，取该点最亮的邻域近似纸色
+            px = min(max(0, int((rect.x0 + rect.x1) / 2 * scale)), arr.shape[1] - 1)
+            py = min(max(0, int((rect.y0 + rect.y1) / 2 * scale)), arr.shape[0] - 1)
+            patch = arr[max(0, py - 2):py + 3, max(0, px - 2):px + 3].reshape(-1, 3)
+            if not len(patch):
+                return (1, 1, 1)
+            color = np.percentile(patch, 75, axis=0) / 255.0
+            return tuple(float(c) for c in color)
+
+        patch = arr[y0:y1, x0:x1].reshape(-1, 3)
+        quant = (patch // 24).astype(np.int32)
+        keys = quant[:, 0] * 10000 + quant[:, 1] * 100 + quant[:, 2]
+        values, counts = np.unique(keys, return_counts=True)
+        dominant = values[counts.argmax()]
+        mean = patch[keys == dominant].mean(axis=0) / 255.0
+        return tuple(float(min(1.0, max(0.0, c))) for c in mean)
+
+    def _text_color(self, fill) -> Tuple[float, float, float]:
+        if self.text_color_mode == "black":
+            return (0, 0, 0)
+        if self.text_color_mode == "white":
+            return (1, 1, 1)
+        luminance = 0.299 * fill[0] + 0.587 * fill[1] + 0.114 * fill[2]
+        return (0, 0, 0) if luminance > 0.5 else (1, 1, 1)

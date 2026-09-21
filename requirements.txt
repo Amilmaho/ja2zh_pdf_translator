@@ -1,29 +1,25 @@
-# PDF Processing
-PyMuPDF==1.24.14
-pymupdf4llm>=0.0.17
+# ========== PDF / DOCX 读写 ==========
+PyMuPDF==1.24.14          # fitz：PDF 提取、渲染、redaction、写入
+python-docx>=1.1.0        # DOCX 读取与写回
 
-# OCR (Optical Character Recognition)
-pytesseract>=0.3.10
-easyocr>=1.7.0
+# ========== OCR ==========
+easyocr>=1.7.0            # 日文句子级识别（推荐）
+pytesseract>=0.3.10       # 字级识别（需另装 tesseract 及 jpn 语言包）
+torch>=2.0                # EasyOCR 后端（CPU 也可用）
 Pillow>=10.0.0
-
-# Translation
-deep-translator>=1.11.4
-openai>=1.0.0
-
-# PDF Generation
-reportlab>=4.0.0
-fpdf2>=2.7.0
-
-# Image Processing
 opencv-python>=4.8.0
 numpy>=1.24.0
 
-# Utilities
-tqdm>=4.65.0
-python-dotenv>=1.0.0
+# ========== 翻译 ==========
+openai>=1.0.0             # DeepSeek / OpenAI（同一套 SDK，只换 base_url）
+deep-translator>=1.11.4   # Google 免费翻译
+# deepl>=1.18.0           # 可选：使用 DeepL 时再安装
 
-# Web UI (Phase 2)
+# ========== 工具 ==========
+python-dotenv>=1.0.0
+tqdm>=4.65.0
+
+# ========== Web UI（可选） ==========
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 python-multipart>=0.0.9

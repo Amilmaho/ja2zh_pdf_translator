@@ -54,6 +54,7 @@
                         <option value="google">Google（免费）</option>
                         <option value="openai">OpenAI GPT</option>
                         <option value="deepl">DeepL</option>
+                        <option value="dummy">Dummy（离线测试，不调用 API）</option>
                     </select>
                 </div>
                 <div class="setting-item">
@@ -73,6 +74,13 @@
                 <div class="setting-item pdf-only">
                     <label>页码范围</label>
                     <input type="text" id="settingPageRange" placeholder="例: 1-5, 10-20（留空=全部）">
+                </div>
+                <div class="setting-row pdf-only">
+                    <label class="switch-label">
+                        <input type="checkbox" id="settingPdfImages">
+                        <span class="switch"></span>
+                        文字页里的图片也翻译（更慢）
+                    </label>
                 </div>
 
                 <!-- DOCX 专属设置 -->

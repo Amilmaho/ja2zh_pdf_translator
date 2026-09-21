@@ -19,11 +19,31 @@ tmp/
 *.temp
 *.log
 
-# ========== 输入/输出 (PDF 不入库) ==========
-input/*.pdf
-output/*.pdf
-output/*.png
-output/*.jpg
+# ========== 缓存（OCR / 翻译）==========
+.cache/
+
+# ========== 输入/输出：只保留占位文件，任何用户文档/结果都不入库 ==========
+# input/ 与 output/ 是用户自己的资料目录（可能含受版权保护的原文），
+# 一律不入库，只保留目录占位文件。
+input/**
+!input/.gitkeep
+output/**
+!output/.gitkeep
+
+# ========== 双保险：文档类文件一律不入库（避免放在根目录时误传） ==========
+*.pdf
+*.docx
+*.doc
+*.pptx
+*.xlsx
+*.epub
+*.tiff
+
+# ========== 密钥/凭据 ==========
+*.pem
+*.key
+credentials.json
+secrets.json
 
 # ========== IDE ==========
 .vscode/

@@ -260,16 +260,24 @@ startBtn.addEventListener('click', async () => {
     const translatorEngine = document.getElementById('settingTranslator').value;
     const ocrEngine = document.getElementById('settingOCR').value;
     const pageRange = document.getElementById('settingPageRange').value.trim();
+    const pdfImagesEl = document.getElementById('settingPdfImages');
+    const docxImagesEl = document.getElementById('settingDocxImages');
 
     // 逐个翻译每个文件
     for (const file of validFiles) {
         addLog('info', `📤 开始翻译: ${file.name}`);
-        
+
+        // 图片翻译选项按文件类型分别取值（PDF / DOCX 的开关是独立的）
+        const translateImages = file.format === 'docx'
+            ? !!(docxImagesEl && docxImagesEl.checked)
+            : !!(pdfImagesEl && pdfImagesEl.checked);
+
         const formData = new FormData();
         formData.append('file_id', file.id);
         if (translatorEngine) formData.append('translator', translatorEngine);
         if (ocrEngine) formData.append('ocr', ocrEngine);
         if (pageRange) formData.append('page_range', pageRange);
+        formData.append('translate_images', translateImages ? 'true' : 'false');
 
         try {
             const resp = await fetch('/api/translate', {

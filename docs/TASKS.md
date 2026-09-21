@@ -4,6 +4,56 @@
 
 ---
 
+## ✅ v0.3 重构：修复 OCR/翻译无法进行 + 译图空白
+
+### 用户反馈
+> 原本这个 OCR 和翻译无法正常进行，翻译后的图片大部分都是空白。
+
+### 定位到的根因
+
+| # | 根因 | 影响 |
+|---|------|------|
+| 1 | `dispatcher.py` 把 `page_range` 传给不接受该参数的构造函数 | Web UI 的 PDF 翻译**必定** TypeError |
+| 2 | 先画白底再 `insert_textbox` 试写，写不进就留白块 | 译图大量空白（核心投诉） |
+| 3 | 覆盖色一律用白色 | 深色表格栏/漫画页被涂成白块 |
+| 4 | 按行取文字却用 block 的 bbox | 同块多行文字叠在一起 |
+| 5 | DOCX `translated_list` 初值为 `''` | 未翻译段落被整段清空 |
+
+### 交付内容
+
+| 类型 | 文件 | 说明 |
+|------|------|------|
+| 新增 | `modules/text_layout.py` | TextFitter：测宽/换行/自适应字号 |
+| 新增 | `modules/fonts.py` | 字体发现 + 字形覆盖校验 |
+| 新增 | `modules/image_overlay.py` | DOCX 内嵌图片译文重绘 |
+| 新增 | `modules/utils.py` | 页码解析 / 缓存键 / 进度回调 |
+| 新增 | `core/pdf_translator.py` | PDF 编排（逐页、自检） |
+| 新增 | `core/docx_translator.py` | DOCX 编排 |
+| 新增 | `tools/verify_pipeline.py` | 端到端自检脚本 |
+| 重写 | `modules/pdf_generator.py` | 在源 PDF 副本上原地改写 |
+| 重写 | `modules/ocr_engine.py` | GPU 自动探测 + 调参 + 缓存 |
+| 重写 | `modules/translator.py` | 批量 + 缓存 + 重试 + dummy 引擎 |
+| 重写 | `main.py` / `core/dispatcher.py` / `web/app.py` | 修 bug + 新增 `--pages` 等参数 |
+
+### 验证结果（真实数据）
+
+| 测试 | 结果 |
+|------|------|
+| `異世界転生RPG.pdf` 第 100~102 页（746 个 OCR 区域） | ✅ 空白色块 0 / 底色不符 0 / 放不下 0 |
+| 第 101 页真实 DeepSeek 翻译（257 区域 → 22 次请求） | ✅ 全部写入，自检 257/257 通过 |
+| 合成文字型 PDF（2 页 16 行） | ✅ redaction 生效，版面保留 |
+| `テスト文書.docx` | ✅ 段落/标题/表格翻译，空段落未被清空 |
+| `PDF画像テスト.docx --translate-images` | ✅ 图片被重绘并替换回 docx，画质保持 |
+| Web API（上传→翻译→SSE→下载） | ✅ 全链路通过 |
+
+### 复现方式
+
+```bash
+python tools/verify_pipeline.py input/異世界転生RPG.pdf --pages 100-102 --visual
+```
+
+---
+
 ## ✅ Phase 2 收尾：CLI DOCX + 进度条 — 已完成
 
 ### 修改文件

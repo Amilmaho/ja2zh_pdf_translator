@@ -30,11 +30,19 @@ ja2zh_pdf_translator/
 │       └── app.js
 ├── modules/
 │   ├── __init__.py
-│   ├── pdf_extractor.py    # PDFExtractor + PageContent/TextBlock/ImageBlock
-│   ├── ocr_engine.py       # OCREngine + EasyOCREngine + TesseractEngine
-│   ├── translator.py       # TranslationEngine + 4 种引擎实现
-│   ├── pdf_generator.py    # PDFGenerator + SimplePDFGenerator
-│   └── docx_reader.py      # 🆕 DocxReader + DocxContent（Phase 4 Step 1）
+│   ├── pdf_extractor.py    # PDFExtractor + PageContent/TextBlock/ImageBlock（逐行 bbox）
+│   ├── ocr_engine.py       # OCREngine + EasyOCREngine + TesseractEngine（GPU 自动 + 缓存）
+│   ├── translator.py       # TranslationEngine + 5 种引擎（批量 + 缓存 + 重试）
+│   ├── text_layout.py      # 🆕 TextFitter — 测宽/换行/自适应字号（防空白的关键）
+│   ├── pdf_generator.py    # 🆕 在原 PDF 副本上写入译文（redaction / 底色覆盖）
+│   ├── image_overlay.py    # 🆕 DOCX 内嵌图片译文重绘
+│   ├── fonts.py            # 🆕 中文字体发现 + 字形覆盖校验
+│   ├── utils.py            # 🆕 页码范围解析 / 缓存键 / 进度回调
+│   ├── docx_reader.py      # DocxReader + DocxContent
+│   └── docx_writer.py      # DocxWriter（保留样式写回）
+├── tools/
+│   └── verify_pipeline.py  # 🆕 端到端自检（空白/底色/溢出/墨量）
+├── .cache/                 # OCR 与翻译缓存
 ├── input/                  # 待翻译的文件
 ├── output/                 # 翻译后的文件
 └── temp/                   # 临时文件（图片等）
@@ -83,6 +91,10 @@ graph TD
     TM --> CFG
     PDFT --> CFG
 ```
+
+> v0.3 起 `DP` 直接委托 `core/pdf_translator.PDFTranslator` 与
+> `core/docx_translator.DOCXTranslator`；`core/dispatcher.py` 里只保留
+> 「按扩展名分派」的适配层。
 
     extractor --> |PageContent| main
     ocr --> |OCRResult| main
@@ -179,23 +191,27 @@ flowchart LR
 
 ---
 
-## 📄 PDF 输出流程
+## 📄 PDF 输出流程（v0.3 重构后）
 
 ```mermaid
 flowchart TD
-    A[PageContent + translated_texts + ocr_results] --> B{文字块 > 0?}
-    B -->|是 文字型| C[_write_translated_text]
-    B -->|否 图片型| D[_build_image_page]
-    C --> E[_embed_images]
-    D --> F[insert_image 原始图]
-    F --> G[_overlay_translated_text]
-    G --> H{渲染成功?}
-    H -->|是| I[继续下一页]
-    H -->|否| J[缩小字号重试]
-    J --> H
-    E --> I
-    I --> K[doc.save 输出PDF]
+    A[fitz.open 源 PDF 副本] --> B{页面有可提取文字?}
+    B -->|有| C[TextFitter 排版每一行]
+    B -->|没有| D[OCR 区域 → 取原图主色 → TextFitter 排版]
+    C --> E{放得下?}
+    D --> F{放得下?}
+    E -->|是| G[redaction 删除原文 + 写入译文]
+    E -->|否| H[保留原文，不覆盖]
+    F -->|是| I[按底色覆盖 + 写入译文]
+    F -->|否| H
+    G --> J[doc.save]
+    I --> J
+    H --> J
+    J --> K[回读自检：每个区域是否真的写进了文字]
 ```
+
+> 旧流程（已废弃）：新建空白页 → 画白底 → `insert_textbox` 试写 →
+> 写不进去就留下白块。这正是「翻译后图片大部分是空白」的根因。
 
 ---
 

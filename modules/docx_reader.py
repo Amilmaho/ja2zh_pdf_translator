@@ -99,6 +99,7 @@ class DocxImage:
     height_px: int = 0
     paragraph_index: int = 0              # 所在段落序号
     content_type: str = ""                # MIME 类型
+    part_name: str = ""                   # 在 docx 包内的部件名（用于回写图片）
     index: int = 0                        # 图片序号
     ocr_results: List = field(default_factory=list)  # 🆕 OCR 结果列表
 
@@ -373,6 +374,7 @@ class DocxReader:
                             height_px=height_px,
                             paragraph_index=para_idx,
                             content_type=content_type,
+                            part_name=str(getattr(image_part, "partname", "") or ""),
                             index=img_index,
                         ))
                         img_index += 1

@@ -18,13 +18,11 @@ Web UI 与所有翻译逻辑之间的唯一入口。
 
 import os
 import sys
-import json
 import uuid
-import time
 import threading
 from datetime import datetime
-from dataclasses import dataclass, field, asdict
-from typing import List, Optional, Dict, Any, Callable
+from dataclasses import dataclass, field
+from typing import List, Optional, Dict, Callable
 from enum import Enum
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -62,7 +60,8 @@ class TaskConfig:
     source_lang: str = "ja"
     target_lang: str = "zh-CN"
     page_range: Optional[str] = None       # PDF 页码范围
-    docx_translate_images: bool = True      # DOCX 图片 OCR
+    translate_images: bool = False          # 是否翻译内嵌图片（PDF 覆盖 / DOCX 重绘）
+    docx_translate_images: bool = None      # 兼容旧字段（None 表示跟随 translate_images）
     docx_translate_headers: bool = True     # DOCX 页眉页脚
     docx_translate_tables: bool = True      # DOCX 表格
 
@@ -282,6 +281,17 @@ class TaskManager:
             return True
         return False
 
+    def clear_finished(self) -> int:
+        """清空已完成/失败/取消的任务，返回清理数量"""
+        with self._lock:
+            to_remove = [
+                tid for tid, t in self._tasks.items()
+                if t.status in (TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.CANCELLED)
+            ]
+            for tid in to_remove:
+                del self._tasks[tid]
+        return len(to_remove)
+
     # ── 日志与进度 ────────────────────────────────────────
 
     def _add_log(self, task: Task, message: str, level: str = "info", progress: int = 0):
@@ -304,7 +314,8 @@ class TaskManager:
 
     def _update_progress(self, task: Task, progress: int):
         """更新进度（通过日志）"""
-        task.logs[-1].progress = progress if task.logs else 0
+        if task.logs:
+            task.logs[-1].progress = progress
 
     def register_log_callback(self, task_id: str, callback: LogCallback):
         """注册 SSE 日志回调"""

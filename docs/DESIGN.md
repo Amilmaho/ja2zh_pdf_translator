@@ -42,7 +42,10 @@
 | **PyMuPDF（当前）** | 保留原始 PDF 版式、元数据、精准坐标 | 需要嵌入字体 |
 | reportlab | 纯 Python、跨平台好 | 完全重新排版，版式丢失 |
 
-**决策**：保留 PyMuPDF 为主方案，`SimplePDFGenerator` 作为备选（纯文字文档用）。
+**决策**：只用 PyMuPDF，并且**在源 PDF 副本上原地改写**（不新建空白页）。
+
+> v0.3 说明：`SimplePDFGenerator`（reportlab 备选方案）已删除 —— 它没有任何
+> 调用方，而且「重新排版」会造成版式丢失，与本项目的目标相反。
 
 ---
 
@@ -329,9 +332,10 @@ flowchart TD
 
 ### Web UI 交互
 - 输入框：`页码范围（如: 1-5, 10-20）`
-- 自动解析 → `_parse_page_range()`
+- 自动解析 → `modules/utils.parse_page_range()`
 - OCR 只处理指定页 ✅（已实现）
 - 翻译只处理指定页 ✅（已实现）
+- CLI 同样支持：`python main.py input.pdf --pages 1-5,10-20`
 
 ---
 
