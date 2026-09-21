@@ -21,7 +21,9 @@ import fitz  # PyMuPDF
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import config
-from modules.ocr_engine import OCREngine, OCRResult, create_ocr_engine
+from modules.ocr_engine import (
+    OCREngine, OCRResult, create_ocr_engine, merge_char_boxes,
+)
 from modules.pdf_extractor import PDFExtractor, PageContent
 from modules.pdf_generator import (
     GenerateStats, OverlayItem, PagePlan, PDFGenerator, TextItem,
@@ -82,6 +84,24 @@ class PDFTranslator:
         self.ocr: Optional[OCREngine] = None
         self.translator: Optional[TranslationEngine] = None
         self.stats: Dict = {}
+        self._gray_cache: Dict[str, object] = {}
+
+    # ── 图像缓存 ─────────────────────────────────────────
+
+    def _gray_of(self, image_path: str):
+        """灰度数组（带缓存：一页要用于合并成行 / 字号标定 / 查漏三处）"""
+        if image_path in self._gray_cache:
+            return self._gray_cache[image_path]
+        try:
+            import numpy as np
+            from PIL import Image
+
+            with Image.open(image_path) as im:
+                gray = np.asarray(im.convert("L"))
+        except Exception:
+            gray = None
+        self._gray_cache[image_path] = gray
+        return gray
 
     # ── 对外入口 ─────────────────────────────────────────
 
@@ -256,6 +276,15 @@ class PDFTranslator:
         results = self.ocr.recognize_file(ocr_source)
         if not results:
             return
+
+        # 字符级引擎（Tesseract）先合并成行，否则每个字一个框，译文根本放不下
+        if getattr(self.ocr, "granularity", "line") == "char":
+            before = len(results)
+            results = merge_char_boxes(results, gray=self._gray_of(ocr_source))
+            if self.verbose:
+                self.reporter.log(
+                    f"  字符级识别合并成行: {before} → {len(results)} 个区域", "info"
+                )
 
         kept, dropped = self._filter_ocr(results, image_rect, image_size)
         stats["ocr_filtered"] += dropped

@@ -76,6 +76,9 @@ class OCREngine:
     """OCR 引擎基类：负责缓存与统一入口"""
 
     name = "base"
+    # 识别粒度："line" = 一次返回一整行（EasyOCR）；
+    #          "char" = 一次只返回一个字/词（Tesseract），需要先合并成行
+    granularity = "line"
 
     def __init__(self, use_cache: bool = None):
         self.use_cache = config.OCR_CACHE if use_cache is None else use_cache
@@ -266,6 +269,7 @@ class TesseractEngine(OCREngine):
     """Tesseract — 单字级识别，CPU 速度快，适合纯文字扫描件"""
 
     name = "tesseract"
+    granularity = "char"
 
     _COMMON_TESSDATA_PATHS = [
         "/opt/homebrew/share/tessdata",
@@ -366,3 +370,94 @@ def create_ocr_engine(engine_name: str = None, verbose: bool = True) -> OCREngin
     if name == "tesseract":
         return TesseractEngine(verbose=verbose)
     raise ValueError(f"不支持的 OCR 引擎: {name}（可选: easyocr | tesseract）")
+
+
+# ── 字符级结果合并成行 ────────────────────────────────────
+
+def merge_char_boxes(
+    results: List[OCRResult],
+    gray=None,
+    gap_ratio: float = 1.1,
+) -> List[OCRResult]:
+    """
+    把「逐字符/逐词」的识别结果合并成整行。
+
+    Tesseract 这类引擎每个字返回一个框（实测一页 1300+ 个），
+    直接逐个翻译会因为框太小而放不下译文；合并成行后与 EasyOCR 一致。
+
+    合并规则：
+      - 按垂直重叠率分行（重叠 > 较小高度的 50% 视为同一行）
+      - 行内按 x 排序，间隙小于一个字形高度就合并
+      - 若两框之间的像素列存在「贯通整行的深色竖线」（表格框线），则不合并，
+        避免把相邻单元格拼成一句
+
+    Args:
+        results: 原始识别结果
+        gray: 原图灰度数组（可选，用于表格框线判定）
+    """
+    if not results:
+        return []
+
+    heights = sorted(max(1.0, r.bbox[3] - r.bbox[1]) for r in results)
+    glyph = heights[len(heights) // 2] or 1.0
+
+    # 1) 分行
+    lines: List[List[OCRResult]] = []
+    for item in sorted(results, key=lambda r: ((r.bbox[1] + r.bbox[3]) / 2, r.bbox[0])):
+        for line in lines:
+            ly0 = min(x.bbox[1] for x in line)
+            ly1 = max(x.bbox[3] for x in line)
+            overlap = min(ly1, item.bbox[3]) - max(ly0, item.bbox[1])
+            smaller = max(1.0, min(ly1 - ly0, item.bbox[3] - item.bbox[1]))
+            if overlap > 0.5 * smaller:
+                line.append(item)
+                break
+        else:
+            lines.append([item])
+
+    # 2) 行内合并
+    merged: List[OCRResult] = []
+    for line in lines:
+        line.sort(key=lambda r: r.bbox[0])
+        current = line[0]
+        for nxt in line[1:]:
+            gap = nxt.bbox[0] - current.bbox[2]
+            if gap <= glyph * gap_ratio and not _has_vertical_rule(
+                gray, current.bbox[2], nxt.bbox[0], current.bbox[1], current.bbox[3]
+            ):
+                separator = "" if gap < glyph * 0.35 else " "
+                current = OCRResult(
+                    text=(current.text + separator + nxt.text).strip(),
+                    confidence=min(current.confidence, nxt.confidence),
+                    bbox=(
+                        current.bbox[0],
+                        min(current.bbox[1], nxt.bbox[1]),
+                        nxt.bbox[2],
+                        max(current.bbox[3], nxt.bbox[3]),
+                    ),
+                )
+            else:
+                merged.append(current)
+                current = nxt
+        merged.append(current)
+    return merged
+
+
+def _has_vertical_rule(gray, x0: float, x1: float, y0: float, y1: float) -> bool:
+    """两框之间是否存在贯穿整行的深色竖线（表格框线）"""
+    if gray is None:
+        return False
+    try:
+        import numpy as np
+
+        a = max(0, int(x0) + 1)
+        b = min(gray.shape[1], int(x1))
+        c = max(0, int(y0))
+        d = min(gray.shape[0], int(y1))
+        if b - a < 1 or d - c < 3:
+            return False
+        strip = gray[c:d, a:b] < 160
+        column_ratio = strip.mean(axis=0)
+        return bool((column_ratio > 0.75).any())
+    except Exception:
+        return False
